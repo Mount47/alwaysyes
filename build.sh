@@ -15,6 +15,8 @@ echo "==> 编译 Swift 源码"
 swiftc -O \
   ClaudePet/main.swift \
   ClaudePet/AppDelegate.swift \
+  ClaudePet/PetController.swift \
+  ClaudePet/SpriteSheet.swift \
   -o "$BIN_DIR/ClaudePet"
 
 echo "==> 写入 Info.plist"

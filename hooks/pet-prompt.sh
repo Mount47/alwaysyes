@@ -4,9 +4,7 @@ CONFIG=~/.claude/pet-config.json
 STATE_DIR=~/.claude/pet-state
 
 enabled=$(jq -r 'if .enabled == false then "false" else "true" end' "$CONFIG" 2>/dev/null); [ -z "$enabled" ] && enabled=true
-pet_on=$(jq -r 'if .pet == false then "false" else "true" end'      "$CONFIG" 2>/dev/null); [ -z "$pet_on" ] && pet_on=true
 [ "$enabled" = "true" ] || exit 0
-[ "$pet_on" = "true" ]  || exit 0
 
 payload="$(cat)"
 session_id="$(printf '%s' "$payload" | jq -r '.session_id // "unknown"')"

@@ -8,9 +8,9 @@ STATE_DIR=~/.claude/pet-state
 
 # 读配置开关。注意不能用 jq 的 `// true`,因为 false 会被它当空值替换成 true。
 # 只有显式为 false 才算关闭;缺失/读不到都默认开启。
+# 状态写入只受 enabled 门控(菜单栏和宠物都靠状态)；pet 字段由 app 侧控制宠物窗口显隐。
 enabled=$(jq -r 'if .enabled == false then "false" else "true" end'      "$CONFIG" 2>/dev/null); [ -z "$enabled" ] && enabled=true
 notify_on=$(jq -r 'if .notification == false then "false" else "true" end' "$CONFIG" 2>/dev/null); [ -z "$notify_on" ] && notify_on=true
-pet_on=$(jq -r 'if .pet == false then "false" else "true" end'           "$CONFIG" 2>/dev/null); [ -z "$pet_on" ] && pet_on=true
 
 # 总开关关闭 -> 什么都不做
 [ "$enabled" = "true" ] || exit 0
@@ -32,13 +32,11 @@ if [ "$notify_on" = "true" ]; then
 fi
 
 # ② 写状态文件: 该会话进入 waiting(需要你处理)
-if [ "$pet_on" = "true" ]; then
-  mkdir -p "$STATE_DIR"
-  now="$(date +%s)"
-  jq -n --arg p "$project" --arg c "$cwd" --arg s "waiting" \
-        --arg sid "$session_id" --argjson t "$now" \
-        '{project:$p, cwd:$c, status:$s, session_id:$sid, updated_at:$t}' \
-        > "$STATE_DIR/${session_id}.json"
-fi
+mkdir -p "$STATE_DIR"
+now="$(date +%s)"
+jq -n --arg p "$project" --arg c "$cwd" --arg s "waiting" \
+      --arg sid "$session_id" --argjson t "$now" \
+      '{project:$p, cwd:$c, status:$s, session_id:$sid, updated_at:$t}' \
+      > "$STATE_DIR/${session_id}.json"
 
 exit 0

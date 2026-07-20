@@ -5,6 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var dirSource: DispatchSourceFileSystemObject?
     var dirFD: Int32 = -1
     var refreshTimer: Timer?
+    let pet = PetController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 确保状态目录存在，否则无法监听
@@ -37,15 +38,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dirSource = src
     }
 
-    // MARK: - 读配置总开关(第2层)
-    func readConfig() -> (enabled: Bool, pet: Bool) {
+    // MARK: - 读配置(第2层)。enabled=总开关; showPet=是否显示桌面宠物; activePet=已装宠物 slug
+    func readConfig() -> (enabled: Bool, showPet: Bool, activePet: String?) {
         guard let data = try? Data(contentsOf: configPath),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return (true, true) }
+        else { return (true, true, nil) }
         // 只有显式 false 才关闭
         let enabled = (obj["enabled"] as? Bool) ?? true
-        let pet = (obj["pet"] as? Bool) ?? true
-        return (enabled, pet)
+        let showPet = (obj["pet"] as? Bool) ?? true
+        let activePet = obj["activePet"] as? String
+        return (enabled, showPet, activePet)
+    }
+
+    // 已装宠物的精灵图路径: ~/.claude/pets/<slug>/spritesheet.webp (或 .png)
+    func spritePath(for slug: String?) -> String? {
+        guard let slug = slug else { return nil }
+        let dir = home.appendingPathComponent(".claude/pets/\(slug)")
+        for name in ["spritesheet.webp", "spritesheet.png", "sprite.webp", "sprite.png"] {
+            let p = dir.appendingPathComponent(name).path
+            if FileManager.default.fileExists(atPath: p) { return p }
+        }
+        return nil
     }
 
     // MARK: - 读所有会话状态
@@ -80,7 +93,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sessions = readSessions()
 
         let overall: OverallState
-        if !cfg.enabled || !cfg.pet {
+        if !cfg.enabled {
             overall = .disabled
         } else if sessions.contains(where: { $0.status == "waiting" }) {
             overall = .waiting
@@ -90,8 +103,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             overall = .idle
         }
 
-        updateIcon(overall, waitingCount: sessions.filter { $0.status == "waiting" }.count)
+        let waitingSessions = sessions.filter { $0.status == "waiting" }
+        updateIcon(overall, waitingCount: waitingSessions.count)
         buildMenu(overall: overall, sessions: sessions, cfg: cfg)
+        updatePet(overall: overall, cfg: cfg, waiting: waitingSessions)
+    }
+
+    // MARK: - 驱动桌面宠物窗口
+    func updatePet(overall: OverallState, cfg: (enabled: Bool, showPet: Bool, activePet: String?), waiting: [SessionState]) {
+        // 总开关关 或 宠物开关关 → 隐藏窗口
+        guard cfg.enabled && cfg.showPet else { pet.hide(); return }
+        pet.show()
+        pet.setContextMenu(buildPetContextMenu())
+        pet.loadSprite(path: spritePath(for: cfg.activePet))
+
+        let emoji: String
+        let anim: PetAnim
+        var bubble: String? = nil
+        switch overall {
+        case .waiting:
+            emoji = "🐔"; anim = .review    // 有项目等确认 → review 动画
+            if let first = waiting.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
+                bubble = waiting.count > 1 ? "\(first.project) +\(waiting.count - 1)" : first.project
+            }
+        case .running:  emoji = "🐥"; anim = .run
+        case .idle:     emoji = "🐣"; anim = .idle
+        case .disabled: emoji = "😴"; anim = .idle
+        }
+        pet.update(emoji: emoji, anim: anim, bubble: bubble)
+    }
+
+    // 宠物的右键菜单
+    func buildPetContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let hide = NSMenuItem(title: "隐藏桌面宠物", action: #selector(togglePet), keyEquivalent: "")
+        hide.target = self
+        menu.addItem(hide)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出 ClaudePet", action: #selector(quitApp), keyEquivalent: "")
+        quit.target = self
+        menu.addItem(quit)
+        return menu
     }
 
     func updateIcon(_ state: OverallState, waitingCount: Int) {
@@ -105,7 +157,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - 构建下拉菜单
-    func buildMenu(overall: OverallState, sessions: [SessionState], cfg: (enabled: Bool, pet: Bool)) {
+    func buildMenu(overall: OverallState, sessions: [SessionState], cfg: (enabled: Bool, showPet: Bool, activePet: String?)) {
         let menu = NSMenu()
 
         // 顶部汇总
@@ -148,11 +200,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        // 启用/停用 开关(第1层 UI，作用是改第2层 pet-config.json)
-        let toggle = NSMenuItem(title: cfg.enabled ? "停用宠物" : "启用宠物",
+        // 选择宠物: 列出 ~/.claude/pets/ 下已装的形象
+        let installed = installedPets()
+        let petMenu = NSMenu()
+        if installed.isEmpty {
+            let none = NSMenuItem(title: "(未安装, 用 emoji 占位)", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            petMenu.addItem(none)
+        } else {
+            for slug in installed {
+                let it = NSMenuItem(title: slug, action: #selector(selectPet(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = slug
+                if slug == cfg.activePet { it.state = .on }
+                petMenu.addItem(it)
+            }
+        }
+        let petParent = NSMenuItem(title: "选择宠物形象", action: nil, keyEquivalent: "")
+        menu.setSubmenu(petMenu, for: petParent)
+        menu.addItem(petParent)
+
+        menu.addItem(.separator())
+
+        // 总开关(改 pet-config.json 的 enabled): 关掉后菜单栏转 😴、宠物隐藏、hook 不再写状态
+        let toggle = NSMenuItem(title: cfg.enabled ? "停用(全部)" : "启用",
                                 action: #selector(toggleEnabled), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
+
+        // 桌面宠物开关(改 pet 字段): 只控制浮动宠物窗口显隐, 不影响菜单栏与弹窗
+        let petToggle = NSMenuItem(title: cfg.showPet ? "隐藏桌面宠物" : "显示桌面宠物",
+                                   action: #selector(togglePet), keyEquivalent: "")
+        petToggle.target = self
+        petToggle.isEnabled = cfg.enabled   // 总开关关了时宠物开关无意义
+        menu.addItem(petToggle)
 
         let quit = NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
@@ -175,14 +256,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - 菜单动作
-    @objc func toggleEnabled() {
+    // 翻转 pet-config.json 里某个布尔开关(缺失视为 true), 写回后刷新
+    private func toggleFlag(_ key: String) {
         var obj: [String: Any] = [:]
         if let data = try? Data(contentsOf: configPath),
            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             obj = parsed
         }
-        let current = (obj["enabled"] as? Bool) ?? true
-        obj["enabled"] = !current
+        let current = (obj[key] as? Bool) ?? true
+        obj[key] = !current
+        if let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
+            try? out.write(to: configPath)
+        }
+        refresh()
+    }
+
+    @objc func toggleEnabled() { toggleFlag("enabled") }
+    @objc func togglePet()     { toggleFlag("pet") }
+
+    // 扫描 ~/.claude/pets/ 下每个含精灵图的子目录, 返回 slug 列表
+    func installedPets() -> [String] {
+        let petsDir = home.appendingPathComponent(".claude/pets")
+        guard let subs = try? FileManager.default.contentsOfDirectory(
+            at: petsDir, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
+        return subs.compactMap { url -> String? in
+            let slug = url.lastPathComponent
+            return spritePath(for: slug) != nil ? slug : nil
+        }.sorted()
+    }
+
+    // 选择某个宠物形象: 写入 activePet 并刷新
+    @objc func selectPet(_ sender: NSMenuItem) {
+        guard let slug = sender.representedObject as? String else { return }
+        var obj: [String: Any] = [:]
+        if let data = try? Data(contentsOf: configPath),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            obj = parsed
+        }
+        obj["activePet"] = slug
         if let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
             try? out.write(to: configPath)
         }
