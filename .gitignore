@@ -1,0 +1,5 @@
+# 构建产物(由 build.sh / install.sh 生成)
+ClaudePet.app/
+
+# Claude Code 本地设置(含本机路径/权限记录, 不共享)
+.claude/settings.local.json
