@@ -76,8 +76,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let sid = obj["session_id"] as? String ?? f.lastPathComponent
             let ts = (obj["updated_at"] as? Double) ?? 0
             let updated = Date(timeIntervalSince1970: ts)
-            // 清理超过 8 小时的陈旧会话文件
-            if now.timeIntervalSince(updated) > 8 * 3600 {
+            let age = now.timeIntervalSince(updated)
+
+            // 按状态分级判定"卡住/过期"并清理陈旧文件:
+            //  - running 正常几秒~几分钟就转 idle; 超 15 分钟没更新 → 会话多半已崩溃
+            //  - waiting 可以合理等你很久, 但封顶 2 小时, 避免永远卡红
+            //  - idle 不影响宠物, 超 5 分钟只是垃圾文件, 清掉
+            let expired: Bool
+            switch status {
+            case "running": expired = age > 15 * 60
+            case "waiting": expired = age > 2 * 3600
+            default:        expired = age > 5 * 60   // idle 及未知状态
+            }
+            if expired {
                 try? FileManager.default.removeItem(at: f)
                 continue
             }
@@ -139,6 +150,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hide = NSMenuItem(title: "隐藏桌面宠物", action: #selector(togglePet), keyEquivalent: "")
         hide.target = self
         menu.addItem(hide)
+        let reset = NSMenuItem(title: "重置状态", action: #selector(resetState), keyEquivalent: "")
+        reset.target = self
+        menu.addItem(reset)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 ClaudePet", action: #selector(quitApp), keyEquivalent: "")
         quit.target = self
@@ -235,6 +249,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         petToggle.isEnabled = cfg.enabled   // 总开关关了时宠物开关无意义
         menu.addItem(petToggle)
 
+        // 重置状态: 清空所有会话状态文件。万一某会话崩溃留下卡住的 waiting/running, 一键清干净
+        let reset = NSMenuItem(title: "重置状态", action: #selector(resetState), keyEquivalent: "")
+        reset.target = self
+        menu.addItem(reset)
+
         let quit = NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -273,6 +292,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleEnabled() { toggleFlag("enabled") }
     @objc func togglePet()     { toggleFlag("pet") }
+
+    // 清空所有会话状态文件(手动兜底: 卡住时一键归位)
+    @objc func resetState() {
+        if let files = try? FileManager.default.contentsOfDirectory(at: stateDir, includingPropertiesForKeys: nil) {
+            for f in files where f.pathExtension == "json" {
+                try? FileManager.default.removeItem(at: f)
+            }
+        }
+        refresh()
+    }
 
     // 扫描 ~/.claude/pets/ 下每个含精灵图的子目录, 返回 slug 列表
     func installedPets() -> [String] {
