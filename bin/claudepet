@@ -1,0 +1,92 @@
+#!/bin/bash
+# claudepet — ClaudePet 命令行入口
+# 用法: claudepet {start|stop|install|status|pet|help}
+#
+# 轻量封装, 不引入新依赖: 内部调用仓库里的 build.sh / install.sh / install-pet.sh,
+# 用 open/pkill 控制 app, 直接读 ~/.claude/pet-state/*.json 看状态。
+set -e
+
+# 定位仓库根目录: 本脚本在 <repo>/bin/claudepet。支持经软链调用(如 Homebrew)。
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+REPO="$(cd -P "$BIN_DIR/.." && pwd)"
+
+APP="$REPO/ClaudePet.app"
+STATE_DIR="$HOME/.claude/pet-state"
+
+cmd_start() {
+  if [ ! -d "$APP" ]; then
+    echo "未找到 ClaudePet.app, 先构建..."
+    "$REPO/build.sh" >/dev/null || { echo "❌ 构建失败(需要 swiftc / Xcode 命令行工具)"; exit 1; }
+  fi
+  open "$APP" && echo "✅ ClaudePet 已启动(菜单栏 AY 图标)"
+}
+
+cmd_stop() {
+  if pkill -f "ClaudePet.app/Contents/MacOS/ClaudePet" 2>/dev/null; then
+    echo "✅ ClaudePet 已退出"
+  else
+    echo "ClaudePet 未在运行"
+  fi
+}
+
+cmd_install() {
+  "$REPO/install.sh"
+}
+
+cmd_status() {
+  command -v jq >/dev/null || { echo "❌ 需要 jq: brew install jq"; exit 1; }
+  shopt -s nullglob
+  local files=("$STATE_DIR"/*.json)
+  if [ ${#files[@]} -eq 0 ]; then
+    echo "当前无活动会话。"
+    return
+  fi
+  local now; now=$(date +%s)
+  printf "%-30s %-9s %s\n" "项目" "状态" "更新"
+  for f in "${files[@]}"; do
+    local proj status ts age
+    proj=$(jq -r '.project // "?"' "$f")
+    status=$(jq -r '.status // "?"' "$f")
+    ts=$(jq -r '.updated_at // 0' "$f")
+    age=$(( (now - ts) / 60 ))
+    printf "%-30s %-9s %d 分钟前\n" "$proj" "$status" "$age"
+  done
+}
+
+cmd_pet() {
+  # 转发给 petdex 安装脚本: claudepet pet <slug> | claudepet pet --list [关键词]
+  "$REPO/install-pet.sh" "$@"
+}
+
+cmd_help() {
+  cat <<'EOF'
+claudepet — macOS 上的 Claude Code 状态提醒桌宠
+
+用法:
+  claudepet start           启动桌面宠物(菜单栏出现 AY 图标)
+  claudepet stop            退出桌面宠物
+  claudepet install         安装 hooks 并首次构建 app(幂等, 可重复运行)
+  claudepet status          命令行查看各项目当前状态
+  claudepet pet <slug>      从 petdex 画廊安装一只宠物形象
+  claudepet pet --list [kw] 列出可安装的宠物形象
+  claudepet help            显示本帮助
+
+首次使用: 先 `claudepet install`, 再 `claudepet start`。
+EOF
+}
+
+case "${1:-help}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  install) cmd_install ;;
+  status)  cmd_status ;;
+  pet)     shift; cmd_pet "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *) echo "未知命令: $1"; echo; cmd_help; exit 1 ;;
+esac
