@@ -3,3 +3,6 @@ ClaudePet.app/
 
 # Claude Code 本地设置(含本机路径/权限记录, 不共享)
 .claude/settings.local.json
+
+# 本地素材生成工具(非项目核心, 仅用于生成自制宠物精灵图)
+make-pet.py

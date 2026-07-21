@@ -12,7 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "🐣"
+        statusItem.button?.image = ayImage(color: nil, dot: nil)
 
         startWatching()
         // 兜底: 每 5 秒刷新一次(处理"等待时长"文案更新 & 陈旧文件清理)
@@ -80,12 +80,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // 按状态分级判定"卡住/过期"并清理陈旧文件:
             //  - running 正常几秒~几分钟就转 idle; 超 15 分钟没更新 → 会话多半已崩溃
-            //  - waiting 可以合理等你很久, 但封顶 2 小时, 避免永远卡红
+            //  - waiting 会话若正常收尾会转 idle; 超 40 分钟没更新多半是异常退出没触发
+            //    Stop(如直接关窗口/切权限模式), 视为失效清掉, 避免宠物永远卡红
             //  - idle 不影响宠物, 超 5 分钟只是垃圾文件, 清掉
             let expired: Bool
             switch status {
             case "running": expired = age > 15 * 60
-            case "waiting": expired = age > 2 * 3600
+            case "waiting": expired = age > 40 * 60
             default:        expired = age > 5 * 60   // idle 及未知状态
             }
             if expired {
@@ -130,18 +131,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let emoji: String
         let anim: PetAnim
-        var bubble: String? = nil
+        var projects: [String] = []
         switch overall {
         case .waiting:
             emoji = "🐔"; anim = .review    // 有项目等确认 → review 动画
-            if let first = waiting.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
-                bubble = waiting.count > 1 ? "\(first.project) +\(waiting.count - 1)" : first.project
-            }
+            // 全部等待项目, 最近的在前(气泡按需展开时逐行列出)
+            projects = waiting.sorted(by: { $0.updatedAt > $1.updatedAt }).map { $0.project }
         case .running:  emoji = "🐥"; anim = .run
         case .idle:     emoji = "🐣"; anim = .idle
         case .disabled: emoji = "😴"; anim = .idle
         }
-        pet.update(emoji: emoji, anim: anim, bubble: bubble)
+        pet.update(emoji: emoji, anim: anim, waitingProjects: projects)
     }
 
     // 宠物的右键菜单
@@ -162,12 +162,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateIcon(_ state: OverallState, waitingCount: Int) {
         guard let button = statusItem.button else { return }
+        // 品牌图标 "AY" 常驻, 用颜色/红点编码状态(方案A)
         switch state {
-        case .disabled: button.title = "😴"
-        case .waiting:  button.title = waitingCount > 1 ? "🔴\(waitingCount)" : "🔴"
-        case .running:  button.title = "🐥"
-        case .idle:     button.title = "🐣"
+        case .idle:
+            button.image = ayImage(color: nil, dot: nil)      // 模板色, 跟随菜单栏深浅
+            button.title = ""
+        case .running:
+            button.image = ayImage(color: nil, dot: .systemGray) // 灰点=在动
+            button.title = ""
+        case .waiting:
+            button.image = ayImage(color: .systemRed, dot: .systemRed) // 红字+红点, 最醒目
+            button.title = waitingCount > 1 ? " \(waitingCount)" : ""
+        case .disabled:
+            button.image = ayImage(color: .systemGray, dot: nil) // 灰字=停用
+            button.title = ""
         }
+    }
+
+    // 画 "AY" 菜单栏图标。color=nil → 模板图(自动适配深/浅色); 否则彩色图。
+    // dot 非空时在右上角画一个小圆点。
+    func ayImage(color: NSColor?, dot: NSColor?) -> NSImage {
+        let w: CGFloat = 30, h: CGFloat = 18
+        let img = NSImage(size: NSSize(width: w, height: h))
+        img.lockFocus()
+        let font = NSFont.systemFont(ofSize: 15, weight: .heavy)
+        let fg = color ?? .black
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: fg,
+            .kern: -1.0,                 // 紧凑字距, 两字母不太散
+        ]
+        let s = NSAttributedString(string: "AY", attributes: attrs)
+        let sz = s.size()
+        s.draw(at: NSPoint(x: (w - sz.width)/2 - 3, y: (h - sz.height)/2))
+        if let dc = dot {
+            dc.setFill()
+            let r: CGFloat = 5
+            NSBezierPath(ovalIn: NSRect(x: w - r - 1, y: h - r - 1, width: r, height: r)).fill()
+        }
+        img.unlockFocus()
+        img.isTemplate = (color == nil)   // 无色 → 模板图跟随系统; 有色 → 保留彩色
+        return img
     }
 
     // MARK: - 构建下拉菜单

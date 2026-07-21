@@ -9,60 +9,108 @@ import Cocoa
 class PetView: NSView {
     var emoji: String = "🐣"
     var frame_: NSImage? = nil  // 当前精灵帧; 非 nil 时替代 emoji
-    var bubble: String? = nil   // 非 nil 时在宠物上方画气泡
+    var waitingProjects: [String] = []  // 正在等确认的项目名(可多个)
+    var bubbleVisible: Bool = false     // 气泡是否显示: 仅在悬停/点击时为 true
     var contextMenu: NSMenu?    // 右键菜单(由 AppDelegate 注入)
+    var onDesiredHeightChange: ((CGFloat) -> Void)?  // 请求窗口按气泡高度伸缩
+
+    static let petAreaH: CGFloat = 150  // 底部固定留给宠物, 气泡在其上方, 二者不重叠
+    private var trackingArea: NSTrackingArea?
 
     // 右键(或 Control+左键)时弹出上下文菜单
     override func menu(for event: NSEvent) -> NSMenu? {
         return contextMenu
     }
 
+    // 悬停进入/离开 → 显隐气泡
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = trackingArea { removeTrackingArea(ta) }
+        // 只跟踪底部宠物区域, 避免气泡展开后的空白区误触发
+        let petRect = NSRect(x: 0, y: 0, width: bounds.width, height: PetView.petAreaH)
+        let ta = NSTrackingArea(rect: petRect,
+                                options: [.mouseEnteredAndExited, .activeAlways],
+                                owner: self, userInfo: nil)
+        addTrackingArea(ta)
+        trackingArea = ta
+    }
+
+    private func setBubble(_ visible: Bool) {
+        guard visible != bubbleVisible else { return }
+        bubbleVisible = visible && !waitingProjects.isEmpty
+        onDesiredHeightChange?(desiredHeight())
+        needsDisplay = true
+    }
+
+    override func mouseEntered(with event: NSEvent) { setBubble(true) }
+    override func mouseExited(with event: NSEvent)  { setBubble(false) }
+    override func mouseDown(with event: NSEvent) {
+        if !waitingProjects.isEmpty { setBubble(!bubbleVisible) }
+        super.mouseDown(with: event)   // 不拦截, 保留拖动窗口能力
+    }
+
+    // 气泡框尺寸(宽,高); 空列表时为 0
+    private func bubbleMetrics() -> (CGFloat, CGFloat) {
+        guard !waitingProjects.isEmpty else { return (0, 0) }
+        let attrs = bubbleAttrs()
+        let sizes = waitingProjects.map { ($0 as NSString).size(withAttributes: attrs) }
+        let textW = min(sizes.map { $0.width }.max() ?? 0, bounds.width - 16) // 不超窗宽
+        let lineH = sizes.first?.height ?? 14
+        let n = CGFloat(waitingProjects.count)
+        let padX: CGFloat = 8, padY: CGFloat = 4, gap: CGFloat = 2
+        return (textW + padX * 2, lineH * n + gap * (n - 1) + padY * 2)
+    }
+
+    // 期望窗口高度: 无气泡时只需宠物区; 有气泡时 = 宠物区 + 间隙 + 气泡
+    func desiredHeight() -> CGFloat {
+        let base = PetView.petAreaH + 4
+        guard bubbleVisible, !waitingProjects.isEmpty else { return base }
+        let (_, bh) = bubbleMetrics()
+        return PetView.petAreaH + 6 + bh
+    }
+
+    private func bubbleAttrs() -> [NSAttributedString.Key: Any] {
+        [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.white]
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        // 宠物本体: 精灵帧优先, 否则 emoji
+        // 宠物本体: 固定画在底部 petAreaH 区域内(精灵帧优先, 否则 emoji)
+        let petH = PetView.petAreaH
         if let frame = frame_ {
-            let maxW = bounds.width
-            let maxH = bounds.height - 22   // 顶部留给气泡
             let sz = frame.size
-            let scale = min(maxW / sz.width, maxH / sz.height, 1.0)
+            let scale = min(bounds.width / sz.width, petH / sz.height, 1.0)
             let w = sz.width * scale, h = sz.height * scale
-            let x = (bounds.width - w) / 2
-            frame.draw(in: NSRect(x: x, y: 2, width: w, height: h))
+            frame.draw(in: NSRect(x: (bounds.width - w) / 2, y: 2, width: w, height: h))
         } else {
-            let petFont = NSFont.systemFont(ofSize: 44)
-            let petAttrs: [NSAttributedString.Key: Any] = [.font: petFont]
+            let petAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 44)]
             let petStr = emoji as NSString
             let petSize = petStr.size(withAttributes: petAttrs)
-            let petX = (bounds.width - petSize.width) / 2
-            petStr.draw(at: NSPoint(x: petX, y: 4), withAttributes: petAttrs)
+            petStr.draw(at: NSPoint(x: (bounds.width - petSize.width) / 2, y: 4), withAttributes: petAttrs)
         }
 
-        // 气泡(项目名), 只在 waiting 时有
-        guard let text = bubble else { return }
-        let font = NSFont.boldSystemFont(ofSize: 11)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.white
-        ]
-        let str = text as NSString
-        let tsize = str.size(withAttributes: attrs)
-        let padX: CGFloat = 8, padY: CGFloat = 4
-        let bw = tsize.width + padX * 2
-        let bh = tsize.height + padY * 2
+        // 气泡: 仅在悬停/点击且有等待项目时显示; 逐行列出全部项目, 位于宠物上方不重叠
+        guard bubbleVisible, !waitingProjects.isEmpty else { return }
+        let attrs = bubbleAttrs()
+        let (bw, bh) = bubbleMetrics()
+        let padX: CGFloat = 8, padY: CGFloat = 4, gap: CGFloat = 2
+        let lineH = (waitingProjects.first! as NSString).size(withAttributes: attrs).height
         let bx = (bounds.width - bw) / 2
         let by = bounds.height - bh - 2
 
-        let bubbleRect = NSRect(x: bx, y: by, width: bw, height: bh)
-        let path = NSBezierPath(roundedRect: bubbleRect, xRadius: 6, yRadius: 6)
+        let path = NSBezierPath(roundedRect: NSRect(x: bx, y: by, width: bw, height: bh), xRadius: 6, yRadius: 6)
         NSColor(calibratedRed: 0.85, green: 0.2, blue: 0.2, alpha: 0.92).setFill()
         path.fill()
-        str.draw(at: NSPoint(x: bx + padX, y: by + padY), withAttributes: attrs)
+        for (i, line) in waitingProjects.enumerated() {
+            let ly = by + bh - padY - lineH * CGFloat(i + 1) - gap * CGFloat(i)
+            (line as NSString).draw(at: NSPoint(x: bx + padX, y: ly), withAttributes: attrs)
+        }
     }
 }
 
 class PetController {
     private var window: NSWindow?
     private let view = PetView()
-    private let size = NSSize(width: 150, height: 172)  // 容纳 192×208 精灵缩放 + 顶部气泡
+    private let baseSize = NSSize(width: 150, height: 156)  // 无气泡时: 底部宠物区
     private let posPath = home.appendingPathComponent(".claude/pet-pos.json")
     private var sprite: SpriteSheet?
     private var animTimer: Timer?
@@ -72,7 +120,7 @@ class PetController {
     func show() {
         if window != nil { return }
         let w = NSWindow(
-            contentRect: NSRect(origin: .zero, size: size),
+            contentRect: NSRect(origin: .zero, size: baseSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false)
@@ -83,16 +131,31 @@ class PetController {
         w.isMovableByWindowBackground = true      // 拖背景即可移动窗口
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary] // 所有桌面/全屏都跟随
         w.ignoresMouseEvents = false
-        view.frame = NSRect(origin: .zero, size: size)
+        view.frame = NSRect(origin: .zero, size: baseSize)
         w.contentView = view
         w.setFrameOrigin(loadPosition())
         w.orderFrontRegardless()
         window = w
 
+        // 气泡展开/收起时, 保持底边不动、向上伸缩窗口(宠物始终贴底、气泡在其上方)
+        view.onDesiredHeightChange = { [weak self] h in
+            self?.resizeKeepingBottom(to: h)
+        }
+
         // 拖动结束后记住位置
         NotificationCenter.default.addObserver(
             self, selector: #selector(savePosition),
             name: NSWindow.didMoveNotification, object: w)
+    }
+
+    // 改变窗口高度但保持底边固定(原点在左下角, 故底边=origin.y 不变)
+    private func resizeKeepingBottom(to height: CGFloat) {
+        guard let w = window else { return }
+        var f = w.frame
+        f.size.height = height
+        w.setFrame(f, display: true)              // origin 不变 → 底边不动, 向上伸展
+        view.frame = NSRect(origin: .zero, size: f.size)
+        view.needsDisplay = true
     }
 
     func hide() {
@@ -136,10 +199,14 @@ class PetController {
         }
     }
 
-    // 更新: emoji 回退文案 + 动画状态 + 气泡
-    func update(emoji: String, anim: PetAnim, bubble: String?) {
+    // 更新: emoji 回退文案 + 动画状态 + 等待项目列表(气泡内容, 按需显示)
+    func update(emoji: String, anim: PetAnim, waitingProjects: [String]) {
         view.emoji = emoji
-        view.bubble = bubble
+        view.waitingProjects = waitingProjects
+        if waitingProjects.isEmpty && view.bubbleVisible {
+            view.bubbleVisible = false          // 没等待项目 → 收起气泡
+            resizeKeepingBottom(to: view.desiredHeight())
+        }
         if let sp = sprite {
             sp.setState(anim)
             view.frame_ = sp.currentFrame()
@@ -167,7 +234,7 @@ class PetController {
         // 默认: 主屏右下角
         if let screen = NSScreen.main {
             let vf = screen.visibleFrame
-            return NSPoint(x: vf.maxX - size.width - 40, y: vf.minY + 40)
+            return NSPoint(x: vf.maxX - baseSize.width - 40, y: vf.minY + 40)
         }
         return NSPoint(x: 200, y: 200)
     }
