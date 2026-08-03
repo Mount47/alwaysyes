@@ -13,15 +13,18 @@ let configPath = home.appendingPathComponent(".claude/pet-config.json")
 // MARK: - 单个会话状态模型
 struct SessionState {
     let project: String
-    let status: String   // waiting / running / idle
+    let status: String       // waiting / running / failed / idle
     let sessionId: String
     let updatedAt: Date
+    let tty: String?         // 该会话所在终端的 tty, 用于一键跳回去
+    let termProgram: String? // $TERM_PROGRAM, 如 iTerm.app / Apple_Terminal / ghostty
 }
 
-// 汇总后的整体态：等待 > 运行 > 空闲 > 停用
+// 汇总后的整体态：等待 > 出错 > 运行 > 空闲 > 停用
 enum OverallState {
     case disabled     // 总开关关闭
     case waiting      // 至少一个会话需要你点 yes
+    case failed       // 有会话报错(由写 status:"failed" 的 hook 驱动)
     case running      // 有会话在干活
     case idle         // 全部空闲
 }

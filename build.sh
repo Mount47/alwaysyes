@@ -17,6 +17,7 @@ swiftc -O \
   ClaudePet/AppDelegate.swift \
   ClaudePet/PetController.swift \
   ClaudePet/SpriteSheet.swift \
+  ClaudePet/TerminalFocus.swift \
   -o "$BIN_DIR/ClaudePet"
 
 echo "==> 写入 Info.plist"
@@ -34,6 +35,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
+  <!-- 点菜单/气泡跳回终端时要用 AppleScript 控制 iTerm2 / Terminal, 必须声明用途 -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>用于把你点选的会话所在的终端窗口切到最前。</string>
 </dict>
 </plist>
 PLIST

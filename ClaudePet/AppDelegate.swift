@@ -7,6 +7,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var refreshTimer: Timer?
     let pet = PetController()
 
+    // 上一次刷新的汇总态与等待中的会话集合, 用于判断"刚变成什么样"→ 放一次性动画
+    var lastOverall: OverallState?
+    var lastWaitingIds: Set<String> = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 确保状态目录存在，否则无法监听
         try? FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
@@ -50,13 +54,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return (enabled, showPet, activePet)
     }
 
-    // 已装宠物的精灵图路径: ~/.claude/pets/<slug>/spritesheet.webp (或 .png)
+    // 宠物精灵图的搜索目录, 依次尝试:
+    //   ~/.claude/pets   本项目 install-pet.sh / make-pet.py 生成的
+    //   ~/.codex/pets    Codex App 和 awesome-codex-pet 的安装位置(CODEX_HOME 可覆盖)
+    //   ~/.petdex/pets   petdex CLI 的安装位置
+    // 这样用任何官方渠道装的宠物都能直接在菜单里选, 不用再复制一份。
+    func petSearchDirs() -> [URL] {
+        var dirs = [home.appendingPathComponent(".claude/pets")]
+        if let ch = ProcessInfo.processInfo.environment["CODEX_HOME"], !ch.isEmpty {
+            dirs.append(URL(fileURLWithPath: (ch as NSString).expandingTildeInPath)
+                .appendingPathComponent("pets"))
+        }
+        dirs.append(home.appendingPathComponent(".codex/pets"))
+        dirs.append(home.appendingPathComponent(".petdex/pets"))
+        // 去重(CODEX_HOME 可能就指向 ~/.codex)
+        var seen = Set<String>()
+        return dirs.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    // 已装宠物的精灵图路径: <搜索目录>/<slug>/spritesheet.webp (或 .png)
     func spritePath(for slug: String?) -> String? {
-        guard let slug = slug else { return nil }
-        let dir = home.appendingPathComponent(".claude/pets/\(slug)")
-        for name in ["spritesheet.webp", "spritesheet.png", "sprite.webp", "sprite.png"] {
-            let p = dir.appendingPathComponent(name).path
-            if FileManager.default.fileExists(atPath: p) { return p }
+        guard let slug = slug, !slug.isEmpty else { return nil }
+        for dir in petSearchDirs() {
+            let sub = dir.appendingPathComponent(slug)
+            for name in ["spritesheet.webp", "spritesheet.png", "sprite.webp", "sprite.png"] {
+                let p = sub.appendingPathComponent(name).path
+                if FileManager.default.fileExists(atPath: p) { return p }
+            }
         }
         return nil
     }
@@ -77,16 +101,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let ts = (obj["updated_at"] as? Double) ?? 0
             let updated = Date(timeIntervalSince1970: ts)
             let age = now.timeIntervalSince(updated)
+            let tty = (obj["tty"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let term = (obj["term_program"] as? String).flatMap { $0.isEmpty ? nil : $0 }
 
             // 按状态分级判定"卡住/过期"并清理陈旧文件:
             //  - running 正常几秒~几分钟就转 idle; 超 15 分钟没更新 → 会话多半已崩溃
             //  - waiting 会话若正常收尾会转 idle; 超 40 分钟没更新多半是异常退出没触发
             //    Stop(如直接关窗口/切权限模式), 视为失效清掉, 避免宠物永远卡红
+            //  - failed 只是提醒你看一眼, 15 分钟后自动消气
             //  - idle 不影响宠物, 超 5 分钟只是垃圾文件, 清掉
             let expired: Bool
             switch status {
             case "running": expired = age > 15 * 60
             case "waiting": expired = age > 40 * 60
+            case "failed":  expired = age > 15 * 60
             default:        expired = age > 5 * 60   // idle 及未知状态
             }
             if expired {
@@ -94,7 +122,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             result.append(SessionState(project: project, status: status,
-                                       sessionId: sid, updatedAt: updated))
+                                       sessionId: sid, updatedAt: updated,
+                                       tty: tty, termProgram: term))
         }
         return result
     }
@@ -109,6 +138,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             overall = .disabled
         } else if sessions.contains(where: { $0.status == "waiting" }) {
             overall = .waiting
+        } else if sessions.contains(where: { $0.status == "failed" }) {
+            overall = .failed
         } else if sessions.contains(where: { $0.status == "running" }) {
             overall = .running
         } else {
@@ -119,6 +150,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon(overall, waitingCount: waitingSessions.count)
         buildMenu(overall: overall, sessions: sessions, cfg: cfg)
         updatePet(overall: overall, cfg: cfg, waiting: waitingSessions)
+        playTransition(overall: overall, waiting: waitingSessions, cfg: cfg)
+    }
+
+    // 状态跃迁时放一次性动画。首次刷新不放, 免得一开机就庆祝一遍。
+    func playTransition(overall: OverallState, waiting: [SessionState],
+                        cfg: (enabled: Bool, showPet: Bool, activePet: String?)) {
+        let waitingIds = Set(waiting.map { $0.sessionId })
+        defer { lastOverall = overall; lastWaitingIds = waitingIds }
+        guard cfg.enabled, cfg.showPet, let last = lastOverall else { return }
+
+        if !waitingIds.subtracting(lastWaitingIds).isEmpty {
+            pet.playOnce(.jump, emoji: "❗️", duration: 1.4)     // 新冒出一个要点 yes 的 → 跳一下引起注意
+        } else if overall == .idle, last == .running || last == .waiting {
+            pet.playOnce(.wave, emoji: "🎉", duration: 2.0)     // 手头的活全干完了 → 挥手庆祝
+        }
     }
 
     // MARK: - 驱动桌面宠物窗口
@@ -136,11 +182,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .waiting:
             emoji = "🐔"; anim = .review    // 有项目等确认 → review 动画
             // 全部等待项目, 最近的在前(气泡按需展开时逐行列出)
-            projects = waiting.sorted(by: { $0.updatedAt > $1.updatedAt }).map { $0.project }
+            let sorted = waiting.sorted(by: { $0.updatedAt > $1.updatedAt })
+            projects = sorted.map { $0.project }
+            // 点气泡里的项目名 → 跳到那个会话所在的终端标签页
+            pet.onProjectClick = { idx in
+                guard idx >= 0, idx < sorted.count else { return }
+                TerminalFocus.focus(tty: sorted[idx].tty, termProgram: sorted[idx].termProgram)
+            }
+        case .failed:   emoji = "💥"; anim = .failed
         case .running:  emoji = "🐥"; anim = .run
         case .idle:     emoji = "🐣"; anim = .idle
         case .disabled: emoji = "😴"; anim = .idle
         }
+        if projects.isEmpty { pet.onProjectClick = nil }
         pet.update(emoji: emoji, anim: anim, waitingProjects: projects)
     }
 
@@ -173,6 +227,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .waiting:
             button.image = ayImage(color: .systemRed, dot: .systemRed) // 红字+红点, 最醒目
             button.title = waitingCount > 1 ? " \(waitingCount)" : ""
+        case .failed:
+            button.image = ayImage(color: .systemOrange, dot: .systemOrange) // 橙=有任务出错
+            button.title = ""
         case .disabled:
             button.image = ayImage(color: .systemGray, dot: nil) // 灰字=停用
             button.title = ""
@@ -214,6 +271,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch overall {
         case .disabled: header = "已停用"
         case .waiting:  header = "有项目在等你确认"
+        case .failed:   header = "有任务出错"
         case .running:  header = "运行中"
         case .idle:     header = "空闲"
         }
@@ -236,13 +294,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let mark: String
                 switch s.status {
                 case "waiting": mark = "🔴"
+                case "failed":  mark = "💥"
                 case "running": mark = "🐥"
                 default:        mark = "· "
                 }
                 let ago = timeAgo(s.updatedAt)
                 let line = "\(mark) \(s.project) — \(statusLabel(s.status)) (\(ago))"
-                let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
-                item.isEnabled = false
+                // 可点: 跳到该会话所在的终端标签页
+                let item = NSMenuItem(title: line, action: #selector(focusSession(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = s
+                item.toolTip = "跳到该会话所在的终端"
                 menu.addItem(item)
             }
         }
@@ -297,10 +359,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func statusRank(_ s: String) -> Int {
-        switch s { case "waiting": return 0; case "running": return 1; default: return 2 }
+        switch s { case "waiting": return 0; case "failed": return 1; case "running": return 2; default: return 3 }
     }
     func statusLabel(_ s: String) -> String {
-        switch s { case "waiting": return "等你确认"; case "running": return "运行中"; default: return "空闲" }
+        switch s {
+        case "waiting": return "等你确认"
+        case "failed":  return "出错"
+        case "running": return "运行中"
+        default:        return "空闲"
+        }
     }
     func timeAgo(_ d: Date) -> String {
         let sec = Int(Date().timeIntervalSince(d))
@@ -338,15 +405,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
     }
 
-    // 扫描 ~/.claude/pets/ 下每个含精灵图的子目录, 返回 slug 列表
+    // 扫描所有搜索目录下每个含精灵图的子目录, 返回去重后的 slug 列表
     func installedPets() -> [String] {
-        let petsDir = home.appendingPathComponent(".claude/pets")
-        guard let subs = try? FileManager.default.contentsOfDirectory(
-            at: petsDir, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
-        return subs.compactMap { url -> String? in
-            let slug = url.lastPathComponent
-            return spritePath(for: slug) != nil ? slug : nil
-        }.sorted()
+        var slugs: [String] = []
+        var seen = Set<String>()
+        for dir in petSearchDirs() {
+            guard let subs = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.isDirectoryKey]) else { continue }
+            for url in subs {
+                let slug = url.lastPathComponent
+                guard !seen.contains(slug), spritePath(for: slug) != nil else { continue }
+                seen.insert(slug)
+                slugs.append(slug)
+            }
+        }
+        return slugs.sorted()
+    }
+
+    // 点菜单里的会话行 / 气泡里的项目名 → 把那个终端拉到最前
+    @objc func focusSession(_ sender: NSMenuItem) {
+        guard let s = sender.representedObject as? SessionState else { return }
+        TerminalFocus.focus(tty: s.tty, termProgram: s.termProgram)
     }
 
     // 选择某个宠物形象: 写入 activePet 并刷新

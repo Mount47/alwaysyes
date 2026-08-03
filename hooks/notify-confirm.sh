@@ -34,9 +34,17 @@ fi
 # ② 写状态文件: 该会话进入 waiting(需要你处理)
 mkdir -p "$STATE_DIR"
 now="$(date +%s)"
+# 记录会话所在终端, 供 app 的"一键跳回终端"用。
+# ps -o tty= 取的是控制终端(形如 s003); 没有控制终端时输出 ??, 当作取不到。
+tty_id="$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')"
+if [ -z "$tty_id" ] || [ "$tty_id" = "??" ]; then
+  tty_id="$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')"
+fi
+[ "$tty_id" = "??" ] && tty_id=""
 jq -n --arg p "$project" --arg c "$cwd" --arg s "waiting" \
       --arg sid "$session_id" --argjson t "$now" \
-      '{project:$p, cwd:$c, status:$s, session_id:$sid, updated_at:$t}' \
+      --arg tty "$tty_id" --arg term "${TERM_PROGRAM:-}" \
+      '{project:$p, cwd:$c, status:$s, session_id:$sid, updated_at:$t, tty:$tty, term_program:$term}' \
       > "$STATE_DIR/${session_id}.json"
 
 exit 0
