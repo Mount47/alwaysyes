@@ -127,7 +127,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
             let project = obj["project"] as? String ?? "?"
-            let status = obj["status"] as? String ?? "idle"
+            let rawStatus = obj["status"] as? String ?? "idle"
             let sid = obj["session_id"] as? String ?? f.lastPathComponent
             let ts = (obj["updated_at"] as? Double) ?? 0
             let updated = Date(timeIntervalSince1970: ts)
@@ -137,6 +137,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let cwd = (obj["cwd"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let pid = (obj["pid"] as? NSNumber).map { pid_t($0.int32Value) }
             let inferred = (obj["inferred"] as? Bool) ?? false
+
+            // review 放久了降级成 idle: 活干完摆着等你看 diff 是有时效的, 过了这阵就
+            // 当你已经看过了。只降级不改文件 —— 下轮 hook 一写就自然覆盖。
+            let status = (rawStatus == "review" && age > reviewDecayInterval) ? "idle" : rawStatus
 
             let s = SessionState(project: project, status: status,
                                  sessionId: sid, updatedAt: updated,
@@ -183,23 +187,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return kept
     }
 
+    // 汇总: 需要你动手的事(waiting/failed/review)排在机器自己在跑的事(running)前面。
+    func overallState(sessions: [SessionState], enabled: Bool) -> OverallState {
+        if !enabled { return .disabled }
+        if sessions.contains(where: { $0.status == "waiting" }) { return .waiting }
+        if sessions.contains(where: { $0.status == "failed" })  { return .failed }
+        if sessions.contains(where: { $0.status == "review" })  { return .review }
+        if sessions.contains(where: { $0.status == "running" }) { return .running }
+        return .idle
+    }
+
     // MARK: - 刷新图标与菜单
     func refresh() {
         let cfg = readConfig()
         let sessions = readSessions()
-
-        let overall: OverallState
-        if !cfg.enabled {
-            overall = .disabled
-        } else if sessions.contains(where: { $0.status == "waiting" }) {
-            overall = .waiting
-        } else if sessions.contains(where: { $0.status == "failed" }) {
-            overall = .failed
-        } else if sessions.contains(where: { $0.status == "running" }) {
-            overall = .running
-        } else {
-            overall = .idle
-        }
+        let overall = overallState(sessions: sessions, enabled: cfg.enabled)
 
         let waitingSessions = sessions.filter { $0.status == "waiting" }
         updateIcon(overall, waitingCount: waitingSessions.count)
@@ -217,7 +219,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !waitingIds.subtracting(lastWaitingIds).isEmpty {
             pet.playOnce(.jumping, emoji: "❗️", duration: 1.4)   // 新冒出一个要点 yes 的 → 跳一下引起注意
-        } else if overall == .idle, last == .running || last == .waiting {
+        } else if overall == .review || overall == .idle, last == .running || last == .waiting {
             pet.playOnce(.waving, emoji: "🎉", duration: 2.0)    // 手头的活全干完了 → 挥手庆祝
         }
     }
@@ -247,6 +249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                     cwd: sorted[idx].cwd)
             }
         case .failed:   emoji = "💥"; anim = .failed
+        case .review:   emoji = "🔍"; anim = .review    // 活干完了, 等你看 diff
         case .running:  emoji = "🐥"; anim = .running
         case .idle:     emoji = "🐣"; anim = .idle
         case .disabled: emoji = "😴"; anim = .idle
@@ -283,6 +286,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = ""
         case .running:
             button.image = ayImage(color: nil, dot: .systemGray) // 灰点=在动
+            button.title = ""
+        case .review:
+            button.image = ayImage(color: nil, dot: .systemBlue) // 蓝点=写完了等你看
             button.title = ""
         case .waiting:
             button.image = ayImage(color: .systemRed, dot: .systemRed) // 红字+红点, 最醒目
@@ -332,6 +338,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .disabled: header = "已停用"
         case .waiting:  header = "有项目在等你确认"
         case .failed:   header = "有任务出错"
+        case .review:   header = "有改动等你审阅"
         case .running:  header = "运行中"
         case .idle:     header = "空闲"
         }
@@ -355,6 +362,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 switch s.status {
                 case "waiting": mark = "🔴"
                 case "failed":  mark = "💥"
+                case "review":  mark = "🔍"
                 case "running": mark = "🐥"
                 default:        mark = "· "
                 }
@@ -424,12 +432,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func statusRank(_ s: String) -> Int {
-        switch s { case "waiting": return 0; case "failed": return 1; case "running": return 2; default: return 3 }
+        switch s {
+        case "waiting": return 0; case "failed": return 1
+        case "review":  return 2; case "running": return 3
+        default:        return 4
+        }
     }
     func statusLabel(_ s: String) -> String {
         switch s {
         case "waiting": return "等你确认"
         case "failed":  return "出错"
+        case "review":  return "等你审阅"
         case "running": return "运行中"
         default:        return "空闲"
         }

@@ -53,7 +53,12 @@ for _ in 1 2 3 4 5; do
 done
 
 # ---- 写/删状态文件 ----
-# pet_write_state <status>   status: waiting / running / idle / failed
+# pet_write_state <status>   status: waiting / running / review / idle / failed
+#   waiting  等你点 yes            (Notification)
+#   running  在干活                (UserPromptSubmit)
+#   review   活干完了, 等你看 diff  (Stop)
+#   idle     没事干                (会话刚开 / review 放久了自动降级)
+#   failed   出错
 pet_write_state() {
   mkdir -p "$STATE_DIR"
   jq -n --arg p "$project" --arg c "$cwd" --arg s "$1" \

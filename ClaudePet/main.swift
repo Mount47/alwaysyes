@@ -13,7 +13,7 @@ let configPath = home.appendingPathComponent(".claude/pet-config.json")
 // MARK: - 单个会话状态模型
 struct SessionState {
     let project: String
-    let status: String       // waiting / running / failed / idle
+    let status: String       // waiting / running / review / failed / idle
     let sessionId: String
     let updatedAt: Date
     let tty: String?         // 该会话所在终端的 tty, 用于一键跳回去
@@ -31,18 +31,41 @@ struct SessionState {
     }
 }
 
-// 汇总后的整体态：等待 > 出错 > 运行 > 空闲 > 停用
+// 汇总后的整体态：等待 > 出错 > 审阅 > 运行 > 空闲 > 停用
+//
+// 状态语义对齐 Codex 桌宠: running(在干活) / waiting(等你输入或确认) /
+// review(代码写完了等你看 diff)。review 排在 running 之前 —— 需要你动手的事
+// 优先于机器自己在跑的事。
 enum OverallState {
     case disabled     // 总开关关闭
     case waiting      // 至少一个会话需要你点 yes
     case failed       // 有会话报错(由写 status:"failed" 的 hook 驱动)
+    case review       // 有会话干完了, 等你看改动
     case running      // 有会话在干活
     case idle         // 全部空闲
 }
+
+// review 放置多久没新动静就降级成 idle。不这么做的话, 一轮对话结束后宠物会永远
+// 停在"检查中"—— 你早就看过 diff 了, 它还在那儿举着。
+let reviewDecayInterval: TimeInterval = 10 * 60
 
 // MARK: - 启动
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
+
+// `ClaudePet --dump-state`: 不起界面, 把 app 眼里的会话状态和汇总态打出来就退出。
+// 排查"菜单栏为什么是这个颜色"时不用猜 —— 它走的就是 app 自己那套读取与降级逻辑。
+if CommandLine.arguments.contains("--dump-state") {
+    let sessions = delegate.readSessions()
+    for s in sessions.sorted(by: { delegate.statusRank($0.status) < delegate.statusRank($1.status) }) {
+        let age = Int(Date().timeIntervalSince(s.updatedAt))
+        print("\(s.project)\t\(s.status)\t\(age)s\t\(s.inferred ? "inferred" : "hook")")
+    }
+    let cfg = delegate.readConfig()
+    print("overall: \(delegate.overallState(sessions: sessions, enabled: cfg.enabled))")
+    exit(0)
+}
+
 app.setActivationPolicy(.accessory)  // 无 Dock 图标，纯菜单栏
 app.run()
