@@ -69,8 +69,14 @@ cmd_status() {
 }
 
 cmd_pet() {
-  # 转发给 petdex 安装脚本: claudepet pet <slug> | claudepet pet --list [关键词]
-  "$REPO/install-pet.sh" "$@"
+  # claudepet pet --anime [slug...]  → 装动漫宠物(柯南/基德/小新/灰原哀)
+  # 其余转发给 petdex: claudepet pet <slug> | claudepet pet --list [关键词]
+  if [ "${1:-}" = "--anime" ]; then
+    shift
+    "$REPO/install-anime-pets.sh" "$@"
+  else
+    "$REPO/install-pet.sh" "$@"
+  fi
 }
 
 cmd_help() {
@@ -84,6 +90,7 @@ claudepet — macOS 上的 Claude Code 状态提醒桌宠
   claudepet status          命令行查看各项目当前状态
   claudepet pet <slug>      从 petdex 画廊安装一只宠物形象
   claudepet pet --list [kw] 列出可安装的宠物形象
+  claudepet pet --anime     安装动漫宠物(柯南 / 怪盗基德 / 蜡笔小新 / 灰原哀)
   claudepet help            显示本帮助
 
 首次使用: 先 `claudepet install`, 再 `claudepet start`。

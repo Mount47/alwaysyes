@@ -388,7 +388,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             petMenu.addItem(none)
         } else {
             for slug in installed {
-                let it = NSMenuItem(title: slug, action: #selector(selectPet(_:)), keyEquivalent: "")
+                let title = petDisplayName(slug).map { "\($0)  (\(slug))" } ?? slug
+                let it = NSMenuItem(title: title, action: #selector(selectPet(_:)), keyEquivalent: "")
                 it.target = self
                 it.representedObject = slug
                 if slug == cfg.activePet { it.state = .on }
@@ -484,6 +485,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // 扫描所有搜索目录下每个含精灵图的子目录, 返回去重后的 slug 列表
+    // 宠物的中文/自定义显示名, 取自它目录里的 pet.json。没有或和 slug 一样时返回 nil,
+    // 菜单就只显示 slug —— 免得出现 "conan (conan)" 这种废话。
+    func petDisplayName(_ slug: String) -> String? {
+        for dir in petSearchDirs() {
+            let p = dir.appendingPathComponent(slug).appendingPathComponent("pet.json")
+            guard let data = try? Data(contentsOf: p),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let name = obj["displayName"] as? String,
+                  !name.isEmpty, name != slug
+            else { continue }
+            return name
+        }
+        return nil
+    }
+
     func installedPets() -> [String] {
         var slugs: [String] = []
         var seen = Set<String>()
