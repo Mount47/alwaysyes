@@ -287,8 +287,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                         style: cfg.iconStyle, emphasis: cfg.waitingEmphasis)
         // 停用态交给系统的半透明处理, 不自己画第二套灰版 —— 这是 macOS 的标准表达
         button.appearsDisabled = (state == .disabled)
-        // waiting 只有一个时也把数字打出来: 纯黑白下这是除形状之外唯一的强化手段
-        button.title = (state == .waiting && waitingCount >= 1) ? " \(waitingCount)" : ""
+        // 图标旁边不挂任何文字: 菜单栏只出现一枚图标。有几个在等去下拉菜单里看。
+        button.title = ""
     }
 
     // MARK: - 构建下拉菜单
@@ -321,18 +321,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(none)
         } else {
             for s in sorted {
-                let mark: String
-                switch s.status {
-                case "waiting": mark = "🔴"
-                case "failed":  mark = "💥"
-                case "review":  mark = "🔍"
-                case "running": mark = "🐥"
-                default:        mark = "· "
-                }
                 let ago = timeAgo(s.updatedAt)
-                let line = "\(mark) \(s.project) — \(statusLabel(s.status)) (\(ago))"
+                let line = "\(s.project) — \(statusLabel(s.status)) (\(ago))"
                 // 可点: 跳到该会话所在的终端标签页
                 let item = NSMenuItem(title: line, action: #selector(focusSession(_:)), keyEquivalent: "")
+                // 行首的状态标记是模板图, 和菜单栏图标同一套形状词汇(四分圆/实心圆/空心圆/感叹号),
+                // 会跟随菜单深浅与高亮态取色。原来这里是一排彩色 emoji, 跟图标语言对不上。
+                item.image = StatusIcon.rowMark(for: s.status)
                 item.target = self
                 item.representedObject = s
                 item.toolTip = s.inferred ? "由进程扫描发现 — 点击跳到该会话" : "跳到该会话所在的终端"

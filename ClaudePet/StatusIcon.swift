@@ -208,22 +208,27 @@ enum StatusIcon {
 
     // MARK: - 角标
 
-    private enum BadgeShape { case solid, hollow, bang }
+    private enum BadgeShape { case solid, hollow, bang, quartered }
 
     // 角标放右下角, 先用 .clear 挖掉一圈透明再画。
     // 现在那个点丑的根因就是没有这一圈: 实心点零间隙贴着本体, 糊在一起像瑕疵而不像徽标。
     private static func drawBadge(_ shape: BadgeShape) {
         let d = size * 0.40                     // 角标直径
         let knock = size * 0.075                // 分离环宽度
-        let cx = size - d / 2 - 0.5
-        let cy = d / 2 + 0.5
-        let box = NSRect(x: cx - d / 2, y: cy - d / 2, width: d, height: d)
+        let box = NSRect(x: size - d - 0.5, y: 0.5, width: d, height: d)
 
         NSGraphicsContext.current?.compositingOperation = .clear
         NSColor.black.setFill()
         NSBezierPath(ovalIn: box.insetBy(dx: -knock, dy: -knock)).fill()
         NSGraphicsContext.current?.compositingOperation = .sourceOver
 
+        fillShape(shape, in: box)
+    }
+
+    // 只画形状本身, 不管挖空和定位 —— 角标和下拉菜单的行标记共用同一套词汇, 所以抽出来
+    private static func fillShape(_ shape: BadgeShape, in box: NSRect) {
+        let d = box.width
+        let cx = box.midX, cy = box.midY
         NSColor.black.setFill()
         switch shape {
         case .solid:
@@ -234,18 +239,53 @@ enum StatusIcon {
             p.append(NSBezierPath(ovalIn: box.insetBy(dx: w, dy: w)))
             p.windingRule = .evenOdd
             p.fill()
+        case .quartered:
+            // 与 waiting 徽标同构: 填实再挖十字缝
+            NSBezierPath(ovalIn: box).fill()
+            NSGraphicsContext.current?.compositingOperation = .clear
+            NSColor.black.setFill()
+            let gap = d * 0.16
+            NSBezierPath(rect: NSRect(x: cx - gap / 2, y: box.minY - 1,
+                                      width: gap, height: d + 2)).fill()
+            NSBezierPath(rect: NSRect(x: box.minX - 1, y: cy - gap / 2,
+                                      width: d + 2, height: gap)).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
         case .bang:
             // 实心圆底 + 挖出来的竖杠和点, 比在 7pt 里画个 "!" 字形清楚得多
             NSBezierPath(ovalIn: box).fill()
             NSGraphicsContext.current?.compositingOperation = .clear
             NSColor.black.setFill()
-            let bw = d * 0.17
+            let bw = max(1, d * 0.17)
             NSBezierPath(rect: NSRect(x: cx - bw / 2, y: cy - d * 0.04,
                                       width: bw, height: d * 0.28)).fill()
             NSBezierPath(ovalIn: NSRect(x: cx - bw / 2, y: cy - d * 0.22,
                                         width: bw, height: bw)).fill()
             NSGraphicsContext.current?.compositingOperation = .sourceOver
         }
+    }
+
+    // MARK: - 下拉菜单里每行会话前面的状态标记
+    //
+    // 原来是一排彩色 emoji(🔴💥🔍🐥)。换成模板图, 和菜单栏图标用同一套形状词汇:
+    //   四分圆 = 等你确认   实心圆 = 运行中   空心圆 = 等你审阅   感叹号 = 出错
+    // idle 不给图, 留空 —— 空闲本来就不需要标记去提示。
+    // 模板图会跟随菜单的深浅和高亮态自动取色, 比 emoji 在选中行上更不容易糊。
+    static func rowMark(for status: String) -> NSImage? {
+        let shape: BadgeShape
+        switch status {
+        case "waiting": shape = .quartered
+        case "running": shape = .solid
+        case "review":  shape = .hollow
+        case "failed":  shape = .bang
+        default:        return nil
+        }
+        let d: CGFloat = 11
+        let img = NSImage(size: NSSize(width: d, height: d))
+        img.lockFocus()
+        fillShape(shape, in: NSRect(x: 0, y: 0, width: d, height: d))
+        img.unlockFocus()
+        img.isTemplate = true
+        return img
     }
 }
 
