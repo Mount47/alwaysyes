@@ -16,7 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = ayImage(color: nil, dot: nil)
+        statusItem.button?.image = StatusIcon.image(for: .idle, waitingCount: 0, style: .vector)
 
         startWatching()
         // 兜底: 每 5 秒刷新一次(处理"等待时长"文案更新 & 陈旧文件清理)
@@ -74,15 +74,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - 读配置(第2层)。enabled=总开关; showPet=是否显示桌面宠物; activePet=已装宠物 slug
-    func readConfig() -> (enabled: Bool, showPet: Bool, activePet: String?) {
+    func readConfig() -> PetConfig {
+        var cfg = PetConfig()
         guard let data = try? Data(contentsOf: configPath),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return (true, true, nil) }
+        else { return cfg }
         // 只有显式 false 才关闭
-        let enabled = (obj["enabled"] as? Bool) ?? true
-        let showPet = (obj["pet"] as? Bool) ?? true
-        let activePet = obj["activePet"] as? String
-        return (enabled, showPet, activePet)
+        cfg.enabled = (obj["enabled"] as? Bool) ?? true
+        cfg.showPet = (obj["pet"] as? Bool) ?? true
+        cfg.activePet = obj["activePet"] as? String
+        cfg.iconStyle = IconStyle(configValue: obj["iconStyle"] as? String)
+        cfg.waitingEmphasis = WaitingEmphasis(configValue: obj["waitingEmphasis"] as? String)
+        return cfg
     }
 
     // 宠物精灵图的搜索目录, 依次尝试:
@@ -204,7 +207,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let overall = overallState(sessions: sessions, enabled: cfg.enabled)
 
         let waitingSessions = sessions.filter { $0.status == "waiting" }
-        updateIcon(overall, waitingCount: waitingSessions.count)
+        updateIcon(overall, waitingCount: waitingSessions.count, cfg: cfg)
         buildMenu(overall: overall, sessions: sessions, cfg: cfg)
         updatePet(overall: overall, cfg: cfg, waiting: waitingSessions)
         playTransition(overall: overall, waiting: waitingSessions, cfg: cfg)
@@ -212,7 +215,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // 状态跃迁时放一次性动画。首次刷新不放, 免得一开机就庆祝一遍。
     func playTransition(overall: OverallState, waiting: [SessionState],
-                        cfg: (enabled: Bool, showPet: Bool, activePet: String?)) {
+                        cfg: PetConfig) {
         let waitingIds = Set(waiting.map { $0.sessionId })
         defer { lastOverall = overall; lastWaitingIds = waitingIds }
         guard cfg.enabled, cfg.showPet, let last = lastOverall else { return }
@@ -225,7 +228,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - 驱动桌面宠物窗口
-    func updatePet(overall: OverallState, cfg: (enabled: Bool, showPet: Bool, activePet: String?), waiting: [SessionState]) {
+    func updatePet(overall: OverallState, cfg: PetConfig, waiting: [SessionState]) {
         // 总开关关 或 宠物开关关 → 隐藏窗口
         guard cfg.enabled && cfg.showPet else { pet.hide(); return }
         pet.show()
@@ -277,59 +280,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
-    func updateIcon(_ state: OverallState, waitingCount: Int) {
+    func updateIcon(_ state: OverallState, waitingCount: Int, cfg: PetConfig) {
         guard let button = statusItem.button else { return }
-        // 品牌图标 "AY" 常驻, 用颜色/红点编码状态(方案A)
-        switch state {
-        case .idle:
-            button.image = ayImage(color: nil, dot: nil)      // 模板色, 跟随菜单栏深浅
-            button.title = ""
-        case .running:
-            button.image = ayImage(color: nil, dot: .systemGray) // 灰点=在动
-            button.title = ""
-        case .review:
-            button.image = ayImage(color: nil, dot: .systemBlue) // 蓝点=写完了等你看
-            button.title = ""
-        case .waiting:
-            button.image = ayImage(color: .systemRed, dot: .systemRed) // 红字+红点, 最醒目
-            button.title = waitingCount > 1 ? " \(waitingCount)" : ""
-        case .failed:
-            button.image = ayImage(color: .systemOrange, dot: .systemOrange) // 橙=有任务出错
-            button.title = ""
-        case .disabled:
-            button.image = ayImage(color: .systemGray, dot: nil) // 灰字=停用
-            button.title = ""
-        }
-    }
-
-    // 画 "AY" 菜单栏图标。color=nil → 模板图(自动适配深/浅色); 否则彩色图。
-    // dot 非空时在右上角画一个小圆点。
-    func ayImage(color: NSColor?, dot: NSColor?) -> NSImage {
-        let w: CGFloat = 30, h: CGFloat = 18
-        let img = NSImage(size: NSSize(width: w, height: h))
-        img.lockFocus()
-        let font = NSFont.systemFont(ofSize: 15, weight: .heavy)
-        let fg = color ?? .black
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: fg,
-            .kern: -1.0,                 // 紧凑字距, 两字母不太散
-        ]
-        let s = NSAttributedString(string: "AY", attributes: attrs)
-        let sz = s.size()
-        s.draw(at: NSPoint(x: (w - sz.width)/2 - 3, y: (h - sz.height)/2))
-        if let dc = dot {
-            dc.setFill()
-            let r: CGFloat = 5
-            NSBezierPath(ovalIn: NSRect(x: w - r - 1, y: h - r - 1, width: r, height: r)).fill()
-        }
-        img.unlockFocus()
-        img.isTemplate = (color == nil)   // 无色 → 模板图跟随系统; 有色 → 保留彩色
-        return img
+        // 全程纯黑白模板图, 状态靠形状区分, 不靠颜色。编码见 StatusIcon。
+        button.image = StatusIcon.image(for: state, waitingCount: waitingCount,
+                                        style: cfg.iconStyle, emphasis: cfg.waitingEmphasis)
+        // 停用态交给系统的半透明处理, 不自己画第二套灰版 —— 这是 macOS 的标准表达
+        button.appearsDisabled = (state == .disabled)
+        // waiting 只有一个时也把数字打出来: 纯黑白下这是除形状之外唯一的强化手段
+        button.title = (state == .waiting && waitingCount >= 1) ? " \(waitingCount)" : ""
     }
 
     // MARK: - 构建下拉菜单
-    func buildMenu(overall: OverallState, sessions: [SessionState], cfg: (enabled: Bool, showPet: Bool, activePet: String?)) {
+    func buildMenu(overall: OverallState, sessions: [SessionState], cfg: PetConfig) {
         let menu = NSMenu()
 
         // 顶部汇总
@@ -399,6 +362,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let petParent = NSMenuItem(title: "选择宠物形象", action: nil, keyEquivalent: "")
         menu.setSubmenu(petMenu, for: petParent)
         menu.addItem(petParent)
+
+        // 菜单栏图标: 矢量重绘 / 位图, 外加 waiting 的三种加重方式。
+        // 放在菜单里而不是只留个配置字段, 是为了能在真机菜单栏上直接切着比。
+        let iconMenu = NSMenu()
+        for (title, value) in [("矢量重绘(锐利)", IconStyle.vector.rawValue),
+                               ("原图位图", IconStyle.bitmap.rawValue)] {
+            let it = NSMenuItem(title: title, action: #selector(selectIconStyle(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = value
+            if cfg.iconStyle.rawValue == value { it.state = .on }
+            iconMenu.addItem(it)
+        }
+        iconMenu.addItem(.separator())
+        let emphHeader = NSMenuItem(title: "等待确认时的加重方式", action: nil, keyEquivalent: "")
+        emphHeader.isEnabled = false
+        iconMenu.addItem(emphHeader)
+        for (title, value) in [("实心(最醒目)", WaitingEmphasis.solid.rawValue),
+                               ("加粗", WaitingEmphasis.bold.rawValue),
+                               ("不变, 只显数字", WaitingEmphasis.plain.rawValue)] {
+            let it = NSMenuItem(title: title, action: #selector(selectWaitingEmphasis(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = value
+            if cfg.waitingEmphasis.rawValue == value { it.state = .on }
+            iconMenu.addItem(it)
+        }
+        let iconParent = NSMenuItem(title: "菜单栏图标样式", action: nil, keyEquivalent: "")
+        menu.setSubmenu(iconMenu, for: iconParent)
+        menu.addItem(iconParent)
 
         menu.addItem(.separator())
 
@@ -530,12 +521,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // 选择某个宠物形象: 写入 activePet 并刷新
     @objc func selectPet(_ sender: NSMenuItem) {
         guard let slug = sender.representedObject as? String else { return }
+        writeConfig(["activePet": slug])
+    }
+
+    // 菜单里选了图标样式 / waiting 强调方式
+    @objc func selectIconStyle(_ sender: NSMenuItem) {
+        guard let v = sender.representedObject as? String else { return }
+        writeConfig(["iconStyle": v])
+    }
+
+    @objc func selectWaitingEmphasis(_ sender: NSMenuItem) {
+        guard let v = sender.representedObject as? String else { return }
+        writeConfig(["waitingEmphasis": v])
+    }
+
+    // 往 pet-config.json 合并几个键, 其余原样保留(这个文件也可能被用户手改)
+    func writeConfig(_ patch: [String: Any]) {
         var obj: [String: Any] = [:]
         if let data = try? Data(contentsOf: configPath),
            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             obj = parsed
         }
-        obj["activePet"] = slug
+        for (k, v) in patch { obj[k] = v }
         if let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
             try? out.write(to: configPath)
         }
