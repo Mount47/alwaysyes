@@ -7,39 +7,75 @@
 
 > 平台:**仅 macOS**(依赖 Cocoa/AppKit)。需要跨平台(Windows/Linux)或联动实体硬件桌宠,可以看看 [Seeed-Solution/vibe-pet](https://github.com/Seeed-Solution/vibe-pet)。
 
-## 安装(clone 后)
+## 安装
+
+先装依赖:`jq` 和 Xcode 命令行工具(提供 `swiftc`)。
 
 ```bash
-git clone <本仓库>
+brew install jq
+xcode-select --install     # 已装过会提示 already installed, 忽略即可
+```
+
+然后:
+
+```bash
+git clone https://github.com/Mount47/alwaysyes.git
 cd alwaysyes
-./install.sh              # 装 hook 脚本 + 合并配置 + 构建 app
-bin/claudepet start       # 启动
+./install.sh --link        # 装 hook + 合并配置 + 构建 app, 并把 claudepet 链到 ~/.local/bin
+claudepet start            # 启动
+claudepet doctor           # 不确定装好没? 跑这个
 ```
 
-想让 `claudepet` 命令全局可用,把 `bin/` 加进 PATH,或建个软链:
+不想动 PATH 就去掉 `--link`,用 `bin/claudepet` 调用。
 
-```bash
-ln -s "$PWD/bin/claudepet" /usr/local/bin/claudepet   # 之后可直接 claudepet start
-```
-
-`install.sh` 幂等、安全,做四件事:
-1. 复制 `hooks/` 三个脚本到 `~/.claude/hooks/`
-2. 用 jq 把 hooks 配置**合并**进你的 `~/.claude/settings.json`(不覆盖原有配置,自动备份)
+`install.sh` 幂等、可反复跑,做五件事:
+1. 复制 `hooks/` 下 6 个脚本到 `~/.claude/hooks/`
+2. 用 jq 把 hooks 配置**合并**进 `~/.claude/settings.json`(不覆盖原有配置,自动备份,只留最近 3 份)
 3. 生成默认 `~/.claude/pet-config.json`(已存在则保留)
 4. 用 swiftc 构建 `ClaudePet.app`
+5. `--link` 时把 `claudepet` 软链到 `~/.local/bin`
 
-依赖:`jq`、`swiftc`(Xcode 命令行工具)、`curl`。缺 swiftc 只是跳过构建,其余照装。
+缺 swiftc 只是跳过构建,其余照装。**hook 只对新开的 claude 会话生效**,已经开着的要重启。
+
+### 卸载
+
+```bash
+./uninstall.sh             # 摘掉 hook 注册、删 hook 脚本、关自启; 配置和已下载的宠物保留
+./uninstall.sh --purge     # 连配置、会话状态、宠物形象一起清
+```
+
+改 `settings.json` 前会自动备份,且只删命令路径指向本项目的 hook 条目,你自己的其它 hook 原样保留。
+
+### 开机自启
+
+```bash
+claudepet autostart on     # 生成 ~/Library/LaunchAgents/com.local.claudepet.plist
+claudepet autostart off
+```
+
+plist 里写的是当前仓库路径,仓库挪了位置要重跑一次。`uninstall.sh` 会一并清掉。
+
+### 更新之后记得重跑 install
+
+hook 是**拷贝**到 `~/.claude/hooks/` 的,不是软链。所以 `git pull` 之后不重跑 `./install.sh`,跑的还是旧 hook —— 而且失败是静默的:状态不再写,但什么都不报错。`claudepet start` 和 `claudepet doctor` 会主动比对仓库与已安装脚本,不一致就提示。
 
 ## 命令行(claudepet)
 
 ```bash
-claudepet start           # 启动桌面宠物(菜单栏出现圆形徽标)
-claudepet stop            # 退出桌面宠物
-claudepet install         # 安装 hooks 并首次构建 app(幂等)
-claudepet status          # 命令行查看各项目当前状态
-claudepet pet --list [kw] # 列出 petdex 可安装的宠物形象
-claudepet pet <slug>      # 安装一只宠物形象
+claudepet start            # 启动桌面宠物(菜单栏出现圆形徽标)
+claudepet stop             # 退出桌面宠物
+claudepet install [--link] # 安装 hooks 并构建 app(幂等)
+claudepet uninstall [--purge]
+claudepet doctor           # 体检: 依赖 / hook 是否最新 / 注册是否齐全 / app 状态
+claudepet status           # 命令行查看各项目当前状态
+claudepet autostart on|off|status
+claudepet pet --list [kw]  # 列出 petdex 可安装的宠物形象
+claudepet pet <slug>       # 安装一只宠物形象
+claudepet pet --anime      # 装动漫宠物(柯南 / 怪盗基德 / 蜡笔小新 / 灰原哀)
 ```
+
+`doctor` 逐项检查依赖、app 是否构建与运行、6 个 hook 脚本与仓库是否一致、
+`settings.json` 里 5 个事件是否都注册了、装了几只宠物、自启开没开。有问题时退出码非 0。
 
 ## 桌面宠物
 
@@ -221,24 +257,31 @@ app 启动时也会静默扫一次(把它没开着时就已经在跑的会话捞
 
 | 在仓库里(git 管理) | 安装到(运行时) |
 |---|---|
-| `hooks/*.sh` 脚本源码 | `~/.claude/hooks/*.sh` |
+| `hooks/*.sh` 脚本源码 | `~/.claude/hooks/*.sh`(拷贝, 更新后要重跑 install) |
 | `ClaudePet/` swift 源码 | `ClaudePet.app`(.gitignore 排除) |
 | — | `~/.claude/settings.json` 的 hooks 段(合并写入) |
 | — | `~/.claude/pet-config.json` |
 | — | `~/.claude/pets/<slug>/`(宠物精灵图,用户本地下载;另会读 `~/.codex/pets/`、`~/.petdex/pets/`) |
+| — | `~/Library/LaunchAgents/com.local.claudepet.plist`(开了自启才有) |
+
+`./uninstall.sh` 会把右列都摘掉(数据默认保留,`--purge` 才一起清)。
 
 ## 仅重新构建 app(改了 swift 源码后)
 
 ```bash
 ./build.sh                # 只编译, 不碰配置
-bin/claudepet start       # 重启宠物
+claudepet stop && claudepet start
 ```
-
-开机自启:系统设置 → 通用 → 登录项 → 添加 `ClaudePet.app`。
 
 ## 生效说明
 
 hook 配置对**新会话**加载,已有会话需重启 `claude`。配置对所有项目全局生效。
+
+## 许可
+
+代码与文档采用 **MIT**,见 [LICENSE](LICENSE)。
+
+宠物精灵图和 `resources/` 下的图**不在** MIT 范围内 —— 见下一节和 LICENSE 末尾的说明。
 
 ## 宠物形象来源与版权
 
