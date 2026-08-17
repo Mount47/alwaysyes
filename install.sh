@@ -3,6 +3,10 @@
 # 把 hook 脚本装到 ~/.claude/hooks/、合并 hooks 配置进 ~/.claude/settings.json、
 # 生成默认 pet-config.json,并(可选)构建菜单栏 app。
 # 幂等: 可反复运行, 不会覆盖你 settings.json 里的其他配置。
+#
+# 用法:
+#   ./install.sh            装好即可
+#   ./install.sh --link     顺便把 claudepet 软链到 ~/.local/bin, 全局可用
 set -e
 cd "$(dirname "$0")"
 REPO="$(pwd)"
@@ -12,6 +16,9 @@ HOOKS_DST="$CLAUDE_DIR/hooks"
 SETTINGS="$CLAUDE_DIR/settings.json"
 CONFIG="$CLAUDE_DIR/pet-config.json"
 STATE_DIR="$CLAUDE_DIR/pet-state"
+
+LINK=0
+[ "${1:-}" = "--link" ] && LINK=1
 
 command -v jq >/dev/null || { echo "❌ 需要 jq,请先: brew install jq"; exit 1; }
 
@@ -38,6 +45,8 @@ echo "==> 4/5 合并 hooks 配置进 $SETTINGS"
 # settings.json 不存在则从空对象开始
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 cp "$SETTINGS" "$SETTINGS.bak.$(date +%s)"
+# 备份只留最近 3 份 —— 反复跑安装会攒一地 .bak.<时间戳>
+ls -1t "$SETTINGS".bak.* 2>/dev/null | tail -n +4 | while read -r old; do rm -f "$old"; done
 
 N="$HOOKS_DST/notify-confirm.sh"
 P="$HOOKS_DST/pet-prompt.sh"
@@ -82,8 +91,31 @@ else
   echo "     跳过(未找到 swiftc / Xcode 命令行工具)"
 fi
 
+# 可选: 把 claudepet 放进 PATH。用 ~/.local/bin 而不是 /usr/local/bin —— 不需要 sudo。
+if [ "$LINK" = "1" ]; then
+  BIN_DIR="$HOME/.local/bin"
+  mkdir -p "$BIN_DIR"
+  ln -sf "$REPO/bin/claudepet" "$BIN_DIR/claudepet"
+  echo "==> 已软链 $BIN_DIR/claudepet"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) : ;;
+    *) echo "     ⚠️  $BIN_DIR 不在 PATH 里, 加一行到 ~/.zshrc:"
+       echo "         export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
+fi
+
 echo
 echo "✅ 安装完成。"
-echo "   启动宠物:   open \"$REPO/ClaudePet.app\""
-echo "   开机自启:   系统设置 → 通用 → 登录项 → 添加 ClaudePet.app"
+echo "   启动宠物:   $REPO/bin/claudepet start"
+echo "   体检:       $REPO/bin/claudepet doctor"
+echo "   开机自启:   $REPO/bin/claudepet autostart on"
+echo "   卸载:       $REPO/uninstall.sh"
 echo "   注意: hook 对新的 claude 会话生效, 已有会话请重启。"
+
+# 一只宠物形象都没有时提示一句。只提示不自动下载 —— 素材有版权, 不该背着用户去拉。
+if [ -z "$(ls -A "$CLAUDE_DIR/pets" 2>/dev/null)" ]; then
+  echo
+  echo "   还没装宠物形象, 桌面宠物会先用 emoji 占位。想换成逐帧动画:"
+  echo "     ./install-anime-pets.sh      柯南 / 怪盗基德 / 蜡笔小新 / 灰原哀"
+  echo "     ./install-pet.sh --list      浏览 petdex 画廊"
+fi
