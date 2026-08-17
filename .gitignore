@@ -6,3 +6,6 @@ ClaudePet.app/
 
 # 本地素材生成工具(非项目核心, 仅用于生成自制宠物精灵图)
 make-pet.py
+
+# macOS 目录元数据
+.DS_Store
