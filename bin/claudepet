@@ -48,12 +48,13 @@ cmd_status() {
     return
   fi
   local now; now=$(date +%s)
-  printf "%-30s %-10s %s\n" "项目" "状态" "更新"
+  printf "%-30s %s\n" "项目" "状态 / 更新"
   for f in "${files[@]}"; do
     local proj status ts age label
     proj=$(jq -r '.project // "?"' "$f")
     status=$(jq -r '.status // "?"' "$f")
-    ts=$(jq -r '.updated_at // 0' "$f")
+    # floor: 扫描器写的 updated_at 可能是浮点, bash 算术只吃整数
+    ts=$(jq -r '(.updated_at // 0) | floor' "$f")
     age=$(( now - ts ))
     # review 放过 10 分钟就当你已经看过了, 与 app 侧的降级规则保持一致
     [ "$status" = "review" ] && [ "$age" -gt 600 ] && status=idle
@@ -64,7 +65,8 @@ cmd_status() {
       failed)  label="出错"     ;;
       *)       label="空闲"     ;;
     esac
-    printf "%-30s %-10s %d 分钟前\n" "$proj" "$label" "$((age / 60))"
+    # 状态不做列对齐: 中文按字节补位会歪, 直接跟在项目名后面
+    printf "%-30s %s · %d 分钟前\n" "$proj" "$label" "$((age / 60))"
   done
 }
 
