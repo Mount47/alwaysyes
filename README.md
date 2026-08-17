@@ -58,7 +58,20 @@ claudepet pet <slug>      # 安装一只宠物形象
 ./install-pet.sh homelander      # 按 slug 安装到 ~/.claude/pets/<slug>/
 ```
 
-装好后点菜单栏图标 → **选择宠物形象** → 选中它。宠物会从 emoji 变成逐帧动画精灵。
+装好后点菜单栏图标 → **选择宠物形象** → 选中它。宠物会从 emoji 变成逐帧动画精灵。菜单里显示的是 `pet.json` 里的 `displayName`(没有就退回 slug)。
+
+### 动漫宠物
+
+另外备了一组动漫形象,一条命令装齐:
+
+```bash
+./install-anime-pets.sh              # 柯南 / 怪盗基德 / 蜡笔小新 / 灰原哀, 共约 7MB
+./install-anime-pets.sh conan aiko   # 只装指定的
+./install-anime-pets.sh --list       # 看有哪些
+# 等价于 claudepet pet --anime
+```
+
+素材来自 [chenxin-dlut/codex-anime-pets](https://github.com/chenxin-dlut/codex-anime-pets)。上游整仓 190MB,脚本用 `git sparse-checkout` 只取需要的目录,并把上游那套规避性英文名(`aiko` 等)改写成中文显示名。**版权见文末说明 —— 本项目不打包也不转发这些图,只是替你从上游下载到本机。**
 
 除了本脚本装到的 `~/.claude/pets/`,app 还会扫描 `~/.codex/pets/`(Codex App 与 awesome-codex-pet 的位置,`CODEX_HOME` 可覆盖)和 `~/.petdex/pets/`(petdex CLI 的位置),所以用官方渠道装的宠物也能直接选:
 
@@ -68,7 +81,18 @@ curl -fsSL https://raw.githubusercontent.com/legeling/awesome-codex-pet/main/scr
   | bash -s -- firefly--lingxiaotian                       # → ~/.codex/pets/
 ```
 
-宠物形象遵循 petdex / Codex 精灵图规范,两代都支持:v1 是 8 列 × 9 行(1536×1872),v2 是 8 列 × 11 行(1536×2288,多出的两行是 16 个朝向,本 app 暂不用)。单帧恒为 192×208px,行=动画状态(idle/wave/run/failed/review/jump),每态 6 帧循环。行数按帧宽高比自动反推,不写死。找不到精灵图时自动回退 emoji。
+宠物形象遵循 petdex / Codex 精灵图规范:8 列,单帧恒为 192×208px,行数按帧宽高比自动反推(9 行 = 1536×1872;11 行 = 1536×2288,多出的两行是 16 个朝向,本 app 暂不用)。找不到精灵图时自动回退 emoji。
+
+**行语义有两代,app 会自动识别**,因为混用会让动画整体错位(挥手播成向右跑、等待播成跳跃):
+
+| 布局 | 行 | 帧数 |
+|---|---|---|
+| `codex9` — Codex / petdex 官方动作库 | 0 idle · 1 running-right · 2 running-left · 3 waving · 4 jumping · 5 failed · 6 waiting · 7 running · 8 review | 每行不等,`[6,8,8,4,5,8,6,6,6]` |
+| `legacy6` — 本仓库 `make-pet.py` 自产 | 0 idle · 1 wave · 2 run · 3 failed · 4 review · 5 jump(6~8 复用 idle) | 每行恒 6 |
+
+识别方式不看文件名也不看 `pet.json`,而是加载时把整图缩绘到一张小位图,数出每行非空帧数当指纹 —— `legacy6` 是清一色 6 帧,`codex9` 的 row1 有 8 帧且 row3 只有 4 帧。每行循环几帧也用这个实测值,所以 4 帧的挥手行不会播出空白格。`legacy6` 缺的状态(如 `waiting`)自动回退到最接近的行。
+
+帧率按状态给:跑动 100ms、跳跃 110ms、挥手 150ms、其余 ~183ms。
 
 ## 图标 / 动画含义
 
@@ -76,17 +100,20 @@ curl -fsSL https://raw.githubusercontent.com/legeling/awesome-codex-pet/main/scr
 
 | 菜单栏 AY | 宠物动画 | 含义 |
 |---|---|---|
-| AY 变红 + 红点(多个时跟数字) | review | 有项目在等你点 yes |
+| AY 变红 + 红点(多个时跟数字) | waiting | 有项目在等你点 yes |
 | AY 变橙 + 橙点 | failed | 有任务出错 |
-| AY + 灰点 | run | 有会话运行中 |
+| AY + 蓝点 | review | 有改动写完了等你审阅 |
+| AY + 灰点 | running | 有会话运行中 |
 | AY(模板色,随深浅色菜单栏) | idle | 全部空闲 |
 | AY 变灰 | idle | 已停用 |
 
-状态切换时还会插播一次性动画:**新冒出一个要点 yes 的项目 → jump 跳一下**引起注意,**手头的活全干完 → wave 挥手庆祝** 2 秒,然后回到常态动画。
+状态切换时还会插播一次性动画:**新冒出一个要点 yes 的项目 → jumping 跳一下**引起注意,**手头的活全干完 → waving 挥手庆祝** 2 秒,然后回到常态动画。
 
 菜单栏下拉逐条列出:`项目名 — 状态 (等待时长)`,waiting 的排最前。**每一行都可以点**,点了就把该会话所在的终端切到最前。
 
-**桌面宠物的项目气泡是按需显示的**:默认只用动画表达状态,不常驻文字;把鼠标**悬停**到宠物上、或**左键点一下**,才弹出气泡并逐行列出全部正在等待的项目,移开即收起。项目多时气泡向上伸展,不遮挡宠物。**点气泡里的项目名**同样跳到对应终端。
+**桌面宠物的项目气泡是按需显示的**:默认只用动画表达状态,不常驻文字;把鼠标**悬停**到宠物上、或**左键点一下**,才弹出气泡并逐行列出全部正在等待的项目,移开即收起。**点气泡里的项目名**同样跳到对应终端。
+
+气泡走 macOS HUD/tooltip 那一套:深色半透明底 + 细高光描边 + 投影 + 指向宠物的小三角,每行前置状态圆点,鼠标压住的那一行整行高亮。多个项目时顶部加一行计数标题。气泡按项目名的实际长度撑开窗口(上限 300px,再长就中间省略),伸缩时底边和水平中心都不动,所以宠物看上去纹丝不动、只有气泡在头顶长出来。
 
 ### 跳回终端能跳多准
 
@@ -106,16 +133,28 @@ hook 会把会话所在的 tty、`$TERM_PROGRAM` 和 cwd 一起写进状态文�
   pet-session-start.sh SessionStart     → idle            读 ~/.claude/pet-state/*.json
   pet-prompt.sh        UserPromptSubmit → running   ──▶   + 扫进程兜底(SessionScanner)
   notify-confirm.sh    Notification     → waiting + 通知  汇总 → 菜单栏图标 + 桌面宠物
-  pet-stop.sh          Stop             → idle
+  pet-stop.sh          Stop             → review
   pet-session-end.sh   SessionEnd       → 删除状态文件
 ```
+
+会话状态语义对齐 Codex 桌宠的三态,加上本项目自己的 `failed` / `idle`:
+
+| status | 触发 | 含义 | 宠物动画 |
+|---|---|---|---|
+| `running` | UserPromptSubmit | 在干活,AI 正在思考或写代码 | running |
+| `waiting` | Notification | 等你输入或点 yes | waiting |
+| `review` | Stop | 一轮回应结束,diff 摆在那儿等你看 | review |
+| `failed` | (暂无 hook 写) | 出错 | failed |
+| `idle` | SessionStart / review 超时降级 | 没事干 | idle |
+
+优先级 `waiting > failed > review > running > idle` —— 需要你动手的事排在机器自己在跑的事前面。`review` 超过 **10 分钟**没新动静会自动降级成 `idle`,否则一轮对话结束后宠物会永远停在"检查中",而你早就看过 diff 了。
 
 每个会话写一个 `~/.claude/pet-state/<session_id>.json`,互不干扰。app 用 FSEvents 实时监听该目录。字段:
 
 | 字段 | 用途 |
 |---|---|
 | `project` / `cwd` | 菜单里显示哪个项目;cwd 还用于反推 IDE 窗口 |
-| `status` | `waiting` / `running` / `idle` / `failed` |
+| `status` | `waiting` / `running` / `review` / `idle` / `failed` |
 | `session_id` / `updated_at` | 文件名与时效判断 |
 | `tty` / `term_program` | 跳回终端 |
 | `pid` | 会话所属的 claude 进程,用来判活 |
@@ -190,6 +229,8 @@ hook 配置对**新会话**加载,已有会话需重启 `claude`。配置对所�
 桌面宠物的精灵图来自社区画廊 [petdex](https://petdex.dev)(`petdex.dev/api/manifest`)。ClaudePet 只是通过其公开 API **下载到用户本地** `~/.claude/pets/`,不在本仓库打包或转发任何精灵图。
 
 petdex 的美术资源版权归**各自提交者**所有,其中部分为同人作品(fan art)。这些资源不适用本项目的代码许可。如需商用或再分发,请自行确认相应形象的授权,并遵循 petdex 的使用条款与下架流程。
+
+`install-anime-pets.sh` 装的那四只来自 [codex-anime-pets](https://github.com/chenxin-dlut/codex-anime-pets)。该仓库的 MIT 许可**只覆盖它自己的代码与文档**,`pets/` 下的图是同人二创,上游明确标注仅限个人非商用,且不授予任何底层角色或商标的权利 —— 柯南、基德、灰原哀的相关权利属青山刚昌与小学馆,蜡笔小新属臼井仪人与双叶社。因此本仓库**不打包、不转发**这些图,脚本只是替你从上游下载到本机 `~/.claude/pets/`。上游保留了权利人下架流程,某只哪天消失属正常,app 找不到精灵图会自动回退 emoji。
 
 ## 后续(未做)
 
