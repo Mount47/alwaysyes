@@ -14,11 +14,13 @@ class PetView: NSView {
     var mask: [Bool]? = nil     // 当前帧的不透明掩膜(SpriteSheet.maskW×maskH), 用于点击穿透
     var waitingProjects: [String] = []  // 正在等确认的项目名(可多个)
     var bubbleVisible: Bool = false     // 气泡是否显示: 仅在悬停/点击时为 true
+    var hoveredLine: Int = -1           // 鼠标压在气泡第几行(-1 = 没压在任何一行)
     var contextMenu: NSMenu?    // 右键菜单(由 AppDelegate 注入)
-    var onDesiredHeightChange: ((CGFloat) -> Void)?  // 请求窗口按气泡高度伸缩
+    var onDesiredSizeChange: ((NSSize) -> Void)?     // 请求窗口按气泡尺寸伸缩
     var onProjectClick: ((Int) -> Void)?             // 点了气泡里第 i 行项目
 
     static let petAreaH: CGFloat = 150  // 底部固定留给宠物, 气泡在其上方, 二者不重叠
+    static let baseWidth: CGFloat = 150 // 没有气泡时的窗口宽度; 气泡更宽时窗口临时撑开
     private var trackingArea: NSTrackingArea?
     private var hoverTimer: Timer?      // 点击穿透后 mouseExited 可能收不到, 用轮询兜底收气泡
 
@@ -36,7 +38,7 @@ class PetView: NSView {
 
     // p 为本视图坐标(左下原点)
     func isInteractive(at p: NSPoint) -> Bool {
-        if bubbleVisible, !waitingProjects.isEmpty, bubbleRect().contains(p) { return true }
+        if bubbleVisible, !waitingProjects.isEmpty, bubbleHitRect().contains(p) { return true }
         let r = petDrawRect()
         guard r.contains(p), r.width > 0, r.height > 0 else { return false }
         guard let mask = mask, mask.count == SpriteSheet.maskW * SpriteSheet.maskH else {
@@ -67,19 +69,25 @@ class PetView: NSView {
         let want = visible && !waitingProjects.isEmpty
         guard want != bubbleVisible else { return }
         bubbleVisible = want
-        if want { startHoverWatch() } else { stopHoverWatch() }
-        onDesiredHeightChange?(desiredHeight())
+        if want { startHoverWatch() } else { stopHoverWatch(); hoveredLine = -1 }
+        onDesiredSizeChange?(desiredSize())
         needsDisplay = true
     }
 
-    // 气泡打开期间轮询鼠标位置: 一旦离开可交互区域就收起。
-    // (透明区域已经穿透, 鼠标从那里离开时系统不会再发 mouseExited 给我们)
+    // 气泡打开期间轮询鼠标位置, 干两件事: 离开可交互区就收起、更新高亮的是哪一行。
+    // (透明区域已经穿透, 鼠标从那里离开时系统不会再发 mouseExited 给我们;
+    //  也正因为窗口大片透明, 靠 mouseMoved 追踪 hover 不如直接问鼠标在哪儿可靠)
     private func startHoverWatch() {
         stopHoverWatch()
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self, let win = self.window else { return }
             let p = self.convert(win.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-            if !self.isInteractive(at: p) { self.setBubble(false) }
+            if !self.isInteractive(at: p) { self.setBubble(false); return }
+            let hit = self.bubbleLineRects().firstIndex { $0.contains(p) } ?? -1
+            if hit != self.hoveredLine {
+                self.hoveredLine = hit
+                self.needsDisplay = true
+            }
         }
     }
 
@@ -126,48 +134,123 @@ class PetView: NSView {
         [.font: NSFont.systemFont(ofSize: 44)]
     }
 
-    private func bubbleAttrs() -> [NSAttributedString.Key: Any] {
-        [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.white]
+    // MARK: - 气泡的样式常量
+    //
+    // 走 macOS HUD/tooltip 那一套: 深色半透明底 + 细高光描边 + 投影, 而不是纯色块。
+    // 深色在浅色和深色桌面上都压得住, 不用跟随系统外观切两套配色。
+
+    private enum Bubble {
+        static let padX: CGFloat = 10        // 气泡左右内边距
+        static let padY: CGFloat = 7         // 气泡上下内边距
+        static let rowGap: CGFloat = 2       // 行与行的间隔
+        static let rowPadX: CGFloat = 6      // 行内文字距离行高亮块左右边的距离
+        static let rowPadY: CGFloat = 3      // 行高亮块比文字高出来的部分(上下各一份)
+        static let corner: CGFloat = 10
+        static let rowCorner: CGFloat = 5
+        static let dotD: CGFloat = 6         // 状态圆点直径
+        static let dotGap: CGFloat = 7       // 圆点到文字的距离
+        static let arrowW: CGFloat = 12      // 指向宠物的小三角
+        static let arrowH: CGFloat = 6
+        static let gapToPet: CGFloat = 6     // 气泡底(含三角)距宠物区顶的空隙
+        static let minW: CGFloat = 128
+        static let maxW: CGFloat = 300       // 项目名再长也不铺满屏幕, 超出中间省略
+
+        static let bg = NSColor(calibratedWhite: 0.11, alpha: 0.93)
+        static let border = NSColor(calibratedWhite: 1.0, alpha: 0.16)
+        static let rowHover = NSColor(calibratedWhite: 1.0, alpha: 0.13)
+        static let text = NSColor(calibratedWhite: 0.97, alpha: 1.0)
+        static let title = NSColor(calibratedWhite: 0.62, alpha: 1.0)
+        static let dot = NSColor.systemOrange
+
+        static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        static let titleFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
     }
 
-    private let padX: CGFloat = 8, padY: CGFloat = 4, gap: CGFloat = 2
+    // 项目名的绘制属性。中间省略 —— 项目名往往前缀相同、尾部才是区分度所在, 砍中间最不伤辨识。
+    private func lineAttrs() -> [NSAttributedString.Key: Any] {
+        let ps = NSMutableParagraphStyle()
+        ps.lineBreakMode = .byTruncatingMiddle
+        return [.font: Bubble.font, .foregroundColor: Bubble.text, .paragraphStyle: ps]
+    }
 
-    // 气泡框尺寸(宽,高); 空列表时为 0
-    private func bubbleMetrics() -> (CGFloat, CGFloat) {
-        guard !waitingProjects.isEmpty else { return (0, 0) }
-        let attrs = bubbleAttrs()
-        let sizes = waitingProjects.map { ($0 as NSString).size(withAttributes: attrs) }
-        let textW = min(sizes.map { $0.width }.max() ?? 0, bounds.width - 16) // 不超窗宽
-        let lineH = sizes.first?.height ?? 14
+    private func titleAttrs() -> [NSAttributedString.Key: Any] {
+        [.font: Bubble.titleFont, .foregroundColor: Bubble.title]
+    }
+
+    // 多个项目在等时才加一行小标题; 只有一个时标题是废话, 白占高度
+    private var bubbleTitle: String? {
+        waitingProjects.count > 1 ? "\(waitingProjects.count) 个项目等你确认" : nil
+    }
+
+    private var rowH: CGFloat {
+        ceil(Bubble.font.ascender - Bubble.font.descender) + Bubble.rowPadY * 2
+    }
+
+    private var titleH: CGFloat {
+        bubbleTitle == nil ? 0 : ceil(Bubble.titleFont.ascender - Bubble.titleFont.descender) + 4
+    }
+
+    // MARK: - 布局计算(draw 和命中测试共用, 避免两处漂移)
+
+    // 气泡的自然宽度。只由文字决定, 不看 bounds —— 否则"窗口按气泡变宽"和
+    // "气泡按窗口截断"会互相循环, 长项目名永远被压在初始窗宽里。
+    private func bubbleWidth() -> CGFloat {
+        guard !waitingProjects.isEmpty else { return 0 }
+        let attrs: [NSAttributedString.Key: Any] = [.font: Bubble.font]
+        var textW = waitingProjects
+            .map { ($0 as NSString).size(withAttributes: attrs).width }
+            .max() ?? 0
+        if let t = bubbleTitle {
+            textW = max(textW, (t as NSString).size(withAttributes: [.font: Bubble.titleFont]).width)
+        }
+        let full = textW + Bubble.dotD + Bubble.dotGap + Bubble.rowPadX * 2 + Bubble.padX * 2
+        return min(max(ceil(full), Bubble.minW), Bubble.maxW)
+    }
+
+    private func bubbleHeight() -> CGFloat {
+        guard !waitingProjects.isEmpty else { return 0 }
         let n = CGFloat(waitingProjects.count)
-        return (textW + padX * 2, lineH * n + gap * (n - 1) + padY * 2)
+        return titleH + rowH * n + Bubble.rowGap * (n - 1) + Bubble.padY * 2
     }
 
-    // 气泡外框(视图坐标)
+    // 气泡外框(视图坐标), 不含底部三角
     func bubbleRect() -> NSRect {
-        let (bw, bh) = bubbleMetrics()
+        let bw = bubbleWidth(), bh = bubbleHeight()
         guard bw > 0 else { return .zero }
         return NSRect(x: (bounds.width - bw) / 2, y: bounds.height - bh - 2, width: bw, height: bh)
     }
 
-    // 气泡内每行项目的矩形, 顺序与 waitingProjects 一致
+    // 命中区比气泡本身大一圈, 向下一直盖到宠物头顶: 鼠标从宠物挪到气泡要穿过中间那段
+    // 透明空隙, 不留出余量的话气泡会在半路自己收起来。
+    func bubbleHitRect() -> NSRect {
+        let box = bubbleRect()
+        guard box.width > 0 else { return .zero }
+        let bottom = PetView.petAreaH - 8
+        return NSRect(x: box.minX - 4, y: bottom,
+                      width: box.width + 8, height: box.maxY - bottom + 4)
+    }
+
+    // 气泡内每行的矩形(即高亮块的范围), 顺序与 waitingProjects 一致
     func bubbleLineRects() -> [NSRect] {
-        guard !waitingProjects.isEmpty else { return [] }
         let box = bubbleRect()
         guard box.width > 0 else { return [] }
-        let lineH = (waitingProjects[0] as NSString).size(withAttributes: bubbleAttrs()).height
+        let top = box.maxY - Bubble.padY - titleH
         return waitingProjects.indices.map { i in
-            let ly = box.maxY - padY - lineH * CGFloat(i + 1) - gap * CGFloat(i)
-            return NSRect(x: box.minX, y: ly, width: box.width, height: lineH)
+            NSRect(x: box.minX + Bubble.padX,
+                   y: top - rowH * CGFloat(i + 1) - Bubble.rowGap * CGFloat(i),
+                   width: box.width - Bubble.padX * 2,
+                   height: rowH)
         }
     }
 
-    // 期望窗口高度: 无气泡时只需宠物区; 有气泡时 = 宠物区 + 间隙 + 气泡
-    func desiredHeight() -> CGFloat {
-        let base = PetView.petAreaH + 4
-        guard bubbleVisible, !waitingProjects.isEmpty else { return base }
-        let (_, bh) = bubbleMetrics()
-        return PetView.petAreaH + 6 + bh
+    // 期望窗口尺寸: 无气泡时只需宠物区; 有气泡时还要容得下气泡的宽和高
+    func desiredSize() -> NSSize {
+        let baseW = PetView.baseWidth
+        guard bubbleVisible, !waitingProjects.isEmpty else {
+            return NSSize(width: baseW, height: PetView.petAreaH + 4)
+        }
+        return NSSize(width: max(baseW, bubbleWidth() + 8),
+                      height: PetView.petAreaH + Bubble.gapToPet + Bubble.arrowH + bubbleHeight())
     }
 
     // MARK: - 绘制
@@ -184,12 +267,59 @@ class PetView: NSView {
         // 气泡: 仅在悬停/点击且有等待项目时显示; 逐行列出全部项目, 位于宠物上方不重叠
         guard bubbleVisible, !waitingProjects.isEmpty else { return }
         let box = bubbleRect()
-        let path = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
-        NSColor(calibratedRed: 0.85, green: 0.2, blue: 0.2, alpha: 0.92).setFill()
+        guard box.width > 0 else { return }
+
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.4)
+        shadow.shadowBlurRadius = 10
+        shadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow.set()
+
+        // 圆角框 + 底部指向宠物的小三角, 合成一条路径一起填充, 免得接缝处透出投影
+        let path = NSBezierPath(roundedRect: box, xRadius: Bubble.corner, yRadius: Bubble.corner)
+        let cx = box.midX
+        let arrow = NSBezierPath()
+        arrow.move(to: NSPoint(x: cx - Bubble.arrowW / 2, y: box.minY + 1))
+        arrow.line(to: NSPoint(x: cx, y: box.minY - Bubble.arrowH))
+        arrow.line(to: NSPoint(x: cx + Bubble.arrowW / 2, y: box.minY + 1))
+        arrow.close()
+        path.append(arrow)
+        Bubble.bg.setFill()
         path.fill()
-        let attrs = bubbleAttrs()
+        NSGraphicsContext.restoreGraphicsState()
+
+        // 细高光描边(只描圆角框, 不描三角 —— 三角上那道边会横穿气泡底显得脏)
+        Bubble.border.setStroke()
+        let stroke = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5),
+                                  xRadius: Bubble.corner, yRadius: Bubble.corner)
+        stroke.lineWidth = 1
+        stroke.stroke()
+
+        if let t = bubbleTitle {
+            (t as NSString).draw(
+                at: NSPoint(x: box.minX + Bubble.padX + Bubble.rowPadX,
+                            y: box.maxY - Bubble.padY - titleH + 2),
+                withAttributes: titleAttrs())
+        }
+
+        let attrs = lineAttrs()
         for (i, lr) in bubbleLineRects().enumerated() {
-            (waitingProjects[i] as NSString).draw(at: NSPoint(x: lr.minX + padX, y: lr.minY), withAttributes: attrs)
+            if i == hoveredLine {
+                Bubble.rowHover.setFill()
+                NSBezierPath(roundedRect: lr, xRadius: Bubble.rowCorner, yRadius: Bubble.rowCorner).fill()
+            }
+            // 状态圆点: 垂直居中于本行
+            Bubble.dot.setFill()
+            NSBezierPath(ovalIn: NSRect(x: lr.minX + Bubble.rowPadX,
+                                        y: lr.midY - Bubble.dotD / 2,
+                                        width: Bubble.dotD, height: Bubble.dotD)).fill()
+            let textX = lr.minX + Bubble.rowPadX + Bubble.dotD + Bubble.dotGap
+            (waitingProjects[i] as NSString).draw(
+                in: NSRect(x: textX, y: lr.minY + Bubble.rowPadY,
+                           width: lr.maxX - Bubble.rowPadX - textX,
+                           height: lr.height - Bubble.rowPadY * 2),
+                withAttributes: attrs)
         }
     }
 }
@@ -197,8 +327,9 @@ class PetView: NSView {
 class PetController {
     private var window: NSWindow?
     private let view = PetView()
-    private let baseSize = NSSize(width: 150, height: 156)  // 无气泡时: 底部宠物区
+    private let baseSize = NSSize(width: PetView.baseWidth, height: 156)  // 无气泡时: 底部宠物区
     private let posPath = home.appendingPathComponent(".claude/pet-pos.json")
+    private var suppressPositionSave = false   // 见 resizeKeepingBottomCenter
     private var sprite: SpriteSheet?
     private var animTimer: Timer?
     private var timerInterval: TimeInterval = 0   // animTimer 当前的间隔, 用来判断要不要重建
@@ -238,9 +369,10 @@ class PetController {
         w.orderFrontRegardless()
         window = w
 
-        // 气泡展开/收起时, 保持底边不动、向上伸缩窗口(宠物始终贴底、气泡在其上方)
-        view.onDesiredHeightChange = { [weak self] h in
-            self?.resizeKeepingBottom(to: h)
+        // 气泡展开/收起时伸缩窗口: 底边和水平中心都不动, 所以宠物看上去纹丝不动,
+        // 只有气泡在它头顶长出来。
+        view.onDesiredSizeChange = { [weak self] size in
+            self?.resizeKeepingBottomCenter(to: size)
         }
 
         // 拖动结束后记住位置
@@ -249,12 +381,19 @@ class PetController {
             name: NSWindow.didMoveNotification, object: w)
     }
 
-    // 改变窗口高度但保持底边固定(原点在左下角, 故底边=origin.y 不变)
-    private func resizeKeepingBottom(to height: CGFloat) {
+    // 改变窗口尺寸但保持底边和水平中心不动。
+    // 期间要抑制位置持久化: setFrame 会触发 didMoveNotification, 不拦的话气泡撑宽窗口
+    // 时那个临时 origin 会被存下来, 宠物每开合一次就往旁边挪一点。
+    private func resizeKeepingBottomCenter(to size: NSSize) {
         guard let w = window else { return }
-        var f = w.frame
-        f.size.height = height
-        w.setFrame(f, display: true)              // origin 不变 → 底边不动, 向上伸展
+        let old = w.frame
+        guard abs(old.width - size.width) > 0.5 || abs(old.height - size.height) > 0.5 else { return }
+        let f = NSRect(x: (old.midX - size.width / 2).rounded(),
+                       y: old.minY,
+                       width: size.width, height: size.height)
+        suppressPositionSave = true
+        w.setFrame(f, display: true)
+        suppressPositionSave = false
         view.frame = NSRect(origin: .zero, size: f.size)
         view.needsDisplay = true
     }
@@ -324,7 +463,7 @@ class PetController {
         view.waitingProjects = waitingProjects
         if waitingProjects.isEmpty && view.bubbleVisible {
             view.closeBubble()                  // 没等待项目 → 收起气泡
-            resizeKeepingBottom(to: view.desiredHeight())
+            resizeKeepingBottomCenter(to: view.desiredSize())
         }
         apply()
     }
@@ -362,7 +501,7 @@ class PetController {
 
     // MARK: - 位置持久化
     @objc private func savePosition() {
-        guard let origin = window?.frame.origin else { return }
+        guard !suppressPositionSave, let origin = window?.frame.origin else { return }
         let obj: [String: Any] = ["x": origin.x, "y": origin.y]
         if let data = try? JSONSerialization.data(withJSONObject: obj) {
             try? data.write(to: posPath)
