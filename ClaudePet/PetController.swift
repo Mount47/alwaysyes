@@ -201,6 +201,7 @@ class PetController {
     private let posPath = home.appendingPathComponent(".claude/pet-pos.json")
     private var sprite: SpriteSheet?
     private var animTimer: Timer?
+    private var timerInterval: TimeInterval = 0   // animTimer 当前的间隔, 用来判断要不要重建
     private var currentSpritePath: String?
 
     // 常态动画/表情 与 一次性动画(庆祝、提醒), 后者在时长内覆盖前者
@@ -296,15 +297,24 @@ class PetController {
         apply()
     }
 
+    // 帧率跟着状态走(跑动比待机快), 所以定时器间隔在状态切换时可能要换 —— 见 syncAnimTimer()
     private func startAnimating() {
+        guard let sp = sprite else { return }
         animTimer?.invalidate()
-        animTimer = Timer.scheduledTimer(withTimeInterval: SpriteSheet.frameInterval, repeats: true) { [weak self] _ in
+        timerInterval = sp.currentInterval
+        animTimer = Timer.scheduledTimer(withTimeInterval: timerInterval, repeats: true) { [weak self] _ in
             guard let self = self, let sp = self.sprite, self.window != nil else { return }
             sp.advance()
             self.view.frame_ = sp.currentFrame()
             self.view.mask = sp.currentMask()
             self.view.needsDisplay = true
         }
+    }
+
+    // 当前状态要求的帧间隔和定时器不一致时重建定时器(状态切换后调一次即可)
+    private func syncAnimTimer() {
+        guard let sp = sprite, animTimer != nil, sp.currentInterval != timerInterval else { return }
+        startAnimating()
     }
 
     // 更新: emoji 回退文案 + 常态动画 + 等待项目列表(气泡内容, 按需显示)
@@ -340,6 +350,7 @@ class PetController {
         view.emoji = transientEmoji ?? baseEmoji
         if let sp = sprite {
             sp.setState(transientAnim ?? baseAnim)
+            syncAnimTimer()
             view.frame_ = sp.currentFrame()
             view.mask = sp.currentMask()
         } else {

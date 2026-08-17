@@ -216,9 +216,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard cfg.enabled, cfg.showPet, let last = lastOverall else { return }
 
         if !waitingIds.subtracting(lastWaitingIds).isEmpty {
-            pet.playOnce(.jump, emoji: "❗️", duration: 1.4)     // 新冒出一个要点 yes 的 → 跳一下引起注意
+            pet.playOnce(.jumping, emoji: "❗️", duration: 1.4)   // 新冒出一个要点 yes 的 → 跳一下引起注意
         } else if overall == .idle, last == .running || last == .waiting {
-            pet.playOnce(.wave, emoji: "🎉", duration: 2.0)     // 手头的活全干完了 → 挥手庆祝
+            pet.playOnce(.waving, emoji: "🎉", duration: 2.0)    // 手头的活全干完了 → 挥手庆祝
         }
     }
 
@@ -235,7 +235,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var projects: [String] = []
         switch overall {
         case .waiting:
-            emoji = "🐔"; anim = .review    // 有项目等确认 → review 动画
+            emoji = "🐔"; anim = .waiting   // 有项目等你点 yes → waiting 动画
             // 全部等待项目, 最近的在前(气泡按需展开时逐行列出)
             let sorted = waiting.sorted(by: { $0.updatedAt > $1.updatedAt })
             projects = sorted.map { $0.project }
@@ -247,7 +247,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                     cwd: sorted[idx].cwd)
             }
         case .failed:   emoji = "💥"; anim = .failed
-        case .running:  emoji = "🐥"; anim = .run
+        case .running:  emoji = "🐥"; anim = .running
         case .idle:     emoji = "🐣"; anim = .idle
         case .disabled: emoji = "😴"; anim = .idle
         }
