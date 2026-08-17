@@ -17,9 +17,13 @@ swiftc -O \
   ClaudePet/AppDelegate.swift \
   ClaudePet/PetController.swift \
   ClaudePet/SpriteSheet.swift \
+  ClaudePet/StatusIcon.swift \
   ClaudePet/TerminalFocus.swift \
   ClaudePet/SessionScanner.swift \
   -o "$BIN_DIR/ClaudePet"
+
+echo "==> 拷入菜单栏图标位图(@1x/@2x/@3x, 供 iconStyle=bitmap 用)"
+cp resources/menubar-icon.png resources/menubar-icon@2x.png resources/menubar-icon@3x.png "$RES_DIR/"
 
 echo "==> 写入 Info.plist"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

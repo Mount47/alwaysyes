@@ -49,6 +49,15 @@ enum OverallState {
 // 停在"检查中"—— 你早就看过 diff 了, 它还在那儿举着。
 let reviewDecayInterval: TimeInterval = 10 * 60
 
+// MARK: - ~/.claude/pet-config.json 的内容
+struct PetConfig {
+    var enabled = true                                  // 总开关
+    var showPet = true                                  // 桌面宠物窗口显隐
+    var activePet: String?                              // 当前选中的宠物形象 slug
+    var iconStyle: IconStyle = .vector                  // 菜单栏图标: 矢量重绘 / 位图
+    var waitingEmphasis: WaitingEmphasis = .solid       // waiting 时图标怎么加重
+}
+
 // MARK: - 启动
 let app = NSApplication.shared
 let delegate = AppDelegate()
@@ -64,6 +73,14 @@ if CommandLine.arguments.contains("--dump-state") {
     }
     let cfg = delegate.readConfig()
     print("overall: \(delegate.overallState(sessions: sessions, enabled: cfg.enabled))")
+    exit(0)
+}
+
+// `ClaudePet --dump-icons <out.png>`: 把六状态 × 两种样式 × 深浅背景渲染成一张对比图。
+// 必须在 app bundle 里跑 —— 位图那条路径走 Bundle.main, 外面的测试程序加载不到资源。
+if let i = CommandLine.arguments.firstIndex(of: "--dump-icons") {
+    let out = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "/tmp/icons.png"
+    IconSheet.write(to: out)
     exit(0)
 }
 
