@@ -18,13 +18,34 @@ REPO="$(cd -P "$BIN_DIR/.." && pwd)"
 
 APP="$REPO/ClaudePet.app"
 STATE_DIR="$HOME/.claude/pet-state"
+HOOKS_DST="$HOME/.claude/hooks"
+SETTINGS="$HOME/.claude/settings.json"
+PLIST="$HOME/Library/LaunchAgents/com.local.claudepet.plist"
+HOOK_FILES="_common.sh notify-confirm.sh pet-prompt.sh pet-stop.sh pet-session-start.sh pet-session-end.sh"
+
+# 已装的 hook 和仓库里的对不上就报出来。
+# hook 是拷贝而不是软链, git pull 之后不重跑 install 就会出现"改了却没反应",
+# 而且失败是静默的 —— 状态不再写, 但什么都不报错。所以这里主动查。
+stale_hooks() {
+  local out=""
+  for s in $HOOK_FILES; do
+    if [ ! -f "$HOOKS_DST/$s" ]; then
+      out="$out $s(未安装)"
+    elif ! cmp -s "$REPO/hooks/$s" "$HOOKS_DST/$s"; then
+      out="$out $s(过期)"
+    fi
+  done
+  echo "$out"
+}
 
 cmd_start() {
   if [ ! -d "$APP" ]; then
     echo "未找到 ClaudePet.app, 先构建..."
     "$REPO/build.sh" >/dev/null || { echo "❌ 构建失败(需要 swiftc / Xcode 命令行工具)"; exit 1; }
   fi
-  open "$APP" && echo "✅ ClaudePet 已启动(菜单栏 AY 图标)"
+  local stale; stale="$(stale_hooks)"
+  [ -n "$stale" ] && echo "⚠️  hook 与仓库不一致:$stale — 跑 claudepet install 同步"
+  open "$APP" && echo "✅ ClaudePet 已启动(菜单栏出现圆形徽标)"
 }
 
 cmd_stop() {
@@ -36,7 +57,100 @@ cmd_stop() {
 }
 
 cmd_install() {
-  "$REPO/install.sh"
+  shift 2>/dev/null || true
+  "$REPO/install.sh" "$@"
+}
+
+cmd_uninstall() {
+  shift 2>/dev/null || true
+  "$REPO/uninstall.sh" "$@"
+}
+
+# 体检: 把"装没装对"一次问清楚, 不用挨个猜
+cmd_doctor() {
+  local bad=0
+  ok()   { printf '  ✅ %s\n' "$1"; }
+  warn() { printf '  ⚠️  %s\n' "$1"; }
+  err()  { printf '  ❌ %s\n' "$1"; bad=1; }
+
+  echo "依赖"
+  command -v jq     >/dev/null && ok "jq" || err "缺 jq — brew install jq(hook 和 status 都要用)"
+  command -v swiftc >/dev/null && ok "swiftc" || err "缺 swiftc — 装 Xcode 命令行工具: xcode-select --install"
+
+  echo "app"
+  [ -d "$APP" ] && ok "已构建 $APP" || err "未构建 — 跑 claudepet install"
+  # 限定到本仓库的 app 路径: 体检是诊断, 报"正在运行"却是别处那份就误导人了。
+  # (cmd_stop 那边故意不限定, 停的时候宁可范围大一点。)
+  if pgrep -f "$APP/Contents/MacOS/ClaudePet" >/dev/null; then ok "正在运行"; else warn "未运行 — claudepet start"; fi
+
+  echo "hook 脚本"
+  local stale; stale="$(stale_hooks)"
+  [ -z "$stale" ] && ok "6 个脚本都与仓库一致" || err "与仓库不一致:$stale — 跑 claudepet install 同步"
+
+  echo "settings.json 里的 hook 注册"
+  if [ ! -f "$SETTINGS" ]; then
+    err "$SETTINGS 不存在 — 跑 claudepet install"
+  elif ! command -v jq >/dev/null; then
+    warn "缺 jq, 跳过检查"
+  else
+    local ev
+    for ev in Notification UserPromptSubmit Stop SessionStart SessionEnd; do
+      if jq -e --arg e "$ev" --arg d "$HOOKS_DST" \
+           '(.hooks[$e] // []) | map(.hooks // []) | flatten | map(.command)
+            | map(startswith($d + "/")) | any' "$SETTINGS" >/dev/null 2>&1; then
+        ok "$ev"
+      else
+        err "$ev 未注册 — 跑 claudepet install"
+      fi
+    done
+  fi
+
+  echo "宠物形象"
+  local n; n=$(ls -1 "$HOME/.claude/pets" 2>/dev/null | wc -l | tr -d ' ')
+  [ "${n:-0}" -gt 0 ] && ok "已装 $n 只" || warn "一只都没有, 桌面宠物用 emoji 占位 — ./install-anime-pets.sh"
+
+  echo "开机自启"
+  [ -f "$PLIST" ] && ok "已开启" || warn "未开启 — claudepet autostart on"
+
+  echo
+  [ "$bad" = "0" ] && echo "✅ 一切正常。" || { echo "❌ 有问题需要处理, 见上面的 ❌。"; exit 1; }
+}
+
+# 开机自启: 走 LaunchAgent, 比手动去系统设置加登录项省事, 卸载脚本也能一并清掉
+cmd_autostart() {
+  case "${1:-status}" in
+    on)
+      [ -d "$APP" ] || { echo "❌ 还没构建 app, 先跑 claudepet install"; exit 1; }
+      mkdir -p "$(dirname "$PLIST")"
+      cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.local.claudepet</string>
+  <key>ProgramArguments</key>
+  <array><string>$APP/Contents/MacOS/ClaudePet</string></array>
+  <key>RunAtLoad</key><true/>
+  <!-- KeepAlive 关掉: 你从菜单里主动退出后不该被拉起来 -->
+  <key>KeepAlive</key><false/>
+</dict>
+</plist>
+PLISTEOF
+      launchctl bootout "gui/$(id -u)/com.local.claudepet" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+      echo "✅ 已开启开机自启($PLIST)"
+      echo "   注意: plist 里写的是当前仓库路径, 仓库挪了位置要重新跑一次。"
+      ;;
+    off)
+      launchctl bootout "gui/$(id -u)/com.local.claudepet" 2>/dev/null || true
+      rm -f "$PLIST"
+      echo "✅ 已关闭开机自启"
+      ;;
+    status)
+      [ -f "$PLIST" ] && echo "开机自启: 已开启" || echo "开机自启: 未开启"
+      ;;
+    *) echo "用法: claudepet autostart on|off|status"; exit 1 ;;
+  esac
 }
 
 cmd_status() {
@@ -86,25 +200,31 @@ cmd_help() {
 claudepet — macOS 上的 Claude Code 状态提醒桌宠
 
 用法:
-  claudepet start           启动桌面宠物(菜单栏出现 AY 图标)
+  claudepet start           启动桌面宠物(菜单栏出现圆形徽标)
   claudepet stop            退出桌面宠物
-  claudepet install         安装 hooks 并首次构建 app(幂等, 可重复运行)
+  claudepet install [--link] 安装 hooks 并构建 app(幂等); --link 顺便链到 ~/.local/bin
+  claudepet uninstall [--purge] 卸载; --purge 连配置和已下载的宠物一起清
+  claudepet doctor          体检: 依赖 / hook 是否最新 / 注册是否齐全 / app 状态
   claudepet status          命令行查看各项目当前状态
+  claudepet autostart on|off|status  开机自启
   claudepet pet <slug>      从 petdex 画廊安装一只宠物形象
   claudepet pet --list [kw] 列出可安装的宠物形象
   claudepet pet --anime     安装动漫宠物(柯南 / 怪盗基德 / 蜡笔小新 / 灰原哀)
   claudepet help            显示本帮助
 
-首次使用: 先 `claudepet install`, 再 `claudepet start`。
+首次使用: 先 `claudepet install`, 再 `claudepet start`。装完不确定对不对就 `claudepet doctor`。
 EOF
 }
 
 case "${1:-help}" in
-  start)   cmd_start ;;
-  stop)    cmd_stop ;;
-  install) cmd_install ;;
-  status)  cmd_status ;;
-  pet)     shift; cmd_pet "$@" ;;
+  start)     cmd_start ;;
+  stop)      cmd_stop ;;
+  install)   cmd_install "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  doctor)    cmd_doctor ;;
+  status)    cmd_status ;;
+  autostart) shift; cmd_autostart "$@" ;;
+  pet)       shift; cmd_pet "$@" ;;
   help|-h|--help) cmd_help ;;
   *) echo "未知命令: $1"; echo; cmd_help; exit 1 ;;
 esac
