@@ -33,7 +33,7 @@ ln -s "$PWD/bin/claudepet" /usr/local/bin/claudepet   # 之后可直接 claudepe
 ## 命令行(claudepet)
 
 ```bash
-claudepet start           # 启动桌面宠物(菜单栏出现 AY 图标)
+claudepet start           # 启动桌面宠物(菜单栏出现圆形徽标)
 claudepet stop            # 退出桌面宠物
 claudepet install         # 安装 hooks 并首次构建 app(幂等)
 claudepet status          # 命令行查看各项目当前状态
@@ -96,16 +96,31 @@ curl -fsSL https://raw.githubusercontent.com/legeling/awesome-codex-pet/main/scr
 
 ## 图标 / 动画含义
 
-菜单栏是常驻的 **AY** 品牌图标(项目缩写),用颜色和红点编码状态:
+菜单栏是一枚黑白圆形徽标(外环 + 四扇形 + 中心圆,造型见 `resources/image-1.png`)。**全程纯黑白**:它是模板图,由系统按菜单栏深浅自动取色,不带任何自有颜色。状态靠**形状**区分:
 
-| 菜单栏 AY | 宠物动画 | 含义 |
+| 菜单栏图标 | 宠物动画 | 含义 |
 |---|---|---|
-| AY 变红 + 红点(多个时跟数字) | waiting | 有项目在等你点 yes |
-| AY 变橙 + 橙点 | failed | 有任务出错 |
-| AY + 蓝点 | review | 有改动写完了等你审阅 |
-| AY + 灰点 | running | 有会话运行中 |
-| AY(模板色,随深浅色菜单栏) | idle | 全部空闲 |
-| AY 变灰 | idle | 已停用 |
+| 徽标填实成四块 + 数字 | waiting | 有项目在等你点 yes |
+| 徽标 + 感叹号角标 | failed | 有任务出错 |
+| 徽标 + 空心角标 | review | 有改动写完了等你审阅 |
+| 徽标 + 实心角标 | running | 有会话运行中 |
+| 常规徽标 | idle | 全部空闲 |
+| 常规徽标 + 系统半透明 | idle | 已停用 |
+
+角标带一圈 **knockout 分离环**(先挖掉一圈透明再画),否则它零间隙贴在徽标上会糊成一起,看着像瑕疵而不像徽标。有角标时徽标缩到 80% 并靠左上,给右下角腾地方 —— 18pt 的画布里不缩的话角标会从徽标身上咬掉一大块。
+
+`waiting` 是这个 app 的核心状态,纯黑白下最难做醒目,所以做成可选:**实心**(默认,把徽标填实再挖出十字缝和中心圆,视觉重量最大且保住十字准星的辨识度)/ **加粗** / **不变只显数字**。菜单里「菜单栏图标样式」可直接切换对比。
+
+> 试过"整体反白"(实心盘挖掉徽标墨迹),实测不行:这个徽标本身墨迹占比就高,负片几乎是空的,反而比常态更不显眼。
+
+图标有两条渲染路径,同样在那个子菜单里切:
+
+- **矢量重绘**(默认)—— 按原图构图用 `NSBezierPath` 重画。原图是三层同心结构,但缩到菜单栏的 18pt 后,环间空隙只剩 0.40px、内细环只剩 0.28px,是亚像素,必然糊成一坨。所以矢量版砍掉内细环和中间那道 hairline,只留这个尺寸下真正看得见的东西,换来任何分辨率都锐利。
+- **原图位图** —— `resources/menubar-icon*.png`(已裁掉水印、白转 alpha),忠于原图,但 @1x 下双环会并成一根粗边。强调态没有对应素材,回退矢量绘制。
+
+> 模板图只认 alpha:不透明像素一律被重绘成前景色。所以"白色"必须是**透明**而不是真的填白 —— 位图是全局 `alpha = 255 - 灰度` 转出来的,矢量则用 `.clear` 合成模式挖空,否则在深色菜单栏上会变成一坨实心。
+>
+> 改了图标几何,跑 `ClaudePet.app/Contents/MacOS/ClaudePet --dump-icons /tmp/icons.png` 可以把六状态 × 两种样式 × 深浅背景一次渲成对比图,比在真机上一个个状态凑出来快。
 
 状态切换时还会插播一次性动画:**新冒出一个要点 yes 的项目 → jumping 跳一下**引起注意,**手头的活全干完 → waving 挥手庆祝** 2 秒,然后回到常态动画。
 
@@ -194,9 +209,10 @@ app 启动时也会静默扫一次(把它没开着时就已经在跑的会话捞
 1. **菜单项** —— 最方便:"停用(全部)"、"隐藏桌面宠物";本质是改下面的配置
 2. **`~/.claude/pet-config.json`** —— 单一事实来源:
    ```json
-   { "enabled": 总开关, "notification": 桌面通知, "pet": 桌面宠物显隐, "activePet": "已选宠物slug" }
+   { "enabled": 总开关, "notification": 桌面通知, "pet": 桌面宠物显隐, "activePet": "已选宠物slug",
+     "iconStyle": "vector|bitmap", "waitingEmphasis": "solid|bold|plain" }
    ```
-   (只有显式 `false` 才关闭;`enabled` 关掉后 hook 不再写状态、菜单栏 AY 变灰、宠物隐藏)
+   (只有显式 `false` 才关闭;`enabled` 关掉后 hook 不再写状态、菜单栏图标转半透明、宠物隐藏)
 3. **`~/.claude/settings.json` 的 hooks 段** —— 最硬,摘掉 hook 就彻底不触发
 
 ## 源码 vs 运行时
