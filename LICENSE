@@ -1,0 +1,43 @@
+MIT License
+
+Copyright (c) 2026 Mount47
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 不在本许可范围内的部分
+
+上面的 MIT 许可只覆盖**本仓库自己的代码与文档**(Swift 源码、hook 脚本、安装脚本、
+README)。以下内容各有出处,不适用本许可:
+
+- **桌面宠物精灵图**。本仓库不打包也不转发任何宠物素材,`install-pet.sh` 和
+  `install-anime-pets.sh` 只是替你从上游下载到本机 `~/.claude/pets/`。
+  - petdex 画廊(<https://petdex.dev>)的素材版权归各自提交者所有,其中部分为同人作品。
+  - `install-anime-pets.sh` 装的四只来自
+    [chenxin-dlut/codex-anime-pets](https://github.com/chenxin-dlut/codex-anime-pets),
+    上游标注仅限个人非商用,且不授予任何底层角色或商标的权利 —— 柯南、怪盗基德、
+    灰原哀的相关权利属青山刚昌与小学馆,蜡笔小新属臼井仪人与双叶社。
+
+  如需商用或再分发,请自行确认相应形象的授权。
+
+- **`resources/` 下的图**。菜单栏图标的源图由 AI 生成,`menubar-icon*.png` 是它的
+  派生物。仅作本项目图标使用。
+
+详见 README 末尾的"素材来源与版权"一节。
