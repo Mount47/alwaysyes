@@ -19,7 +19,8 @@ echo "==> 1/5 创建目录"
 mkdir -p "$HOOKS_DST" "$STATE_DIR"
 
 echo "==> 2/5 安装 hook 脚本到 $HOOKS_DST"
-for s in notify-confirm.sh pet-prompt.sh pet-stop.sh; do
+# _common.sh 是各 hook 共用的取值/写状态逻辑, 必须先装(缺了各 hook 会静默跳过)
+for s in _common.sh notify-confirm.sh pet-prompt.sh pet-stop.sh pet-session-start.sh pet-session-end.sh; do
   cp "$REPO/hooks/$s" "$HOOKS_DST/$s"
   chmod +x "$HOOKS_DST/$s"
   echo "     $s"
@@ -41,12 +42,14 @@ cp "$SETTINGS" "$SETTINGS.bak.$(date +%s)"
 N="$HOOKS_DST/notify-confirm.sh"
 P="$HOOKS_DST/pet-prompt.sh"
 S="$HOOKS_DST/pet-stop.sh"
+SS="$HOOKS_DST/pet-session-start.sh"
+SE="$HOOKS_DST/pet-session-end.sh"
 
 # 用 jq 合并: 对每个事件, 先滤掉指向本项目脚本的旧条目(保证幂等/不重复),
 # 再把本项目的 hook 追加进该事件的数组。其它事件与配置原样保留。
 tmp="$(mktemp)"
 jq \
-  --arg n "$N" --arg p "$P" --arg s "$S" '
+  --arg n "$N" --arg p "$P" --arg s "$S" --arg ss "$SS" --arg se "$SE" '
   def add($event; $cmd):
     .hooks[$event] = (
       ((.hooks[$event] // [])
@@ -60,11 +63,13 @@ jq \
   | add("Notification"; $n)
   | add("UserPromptSubmit"; $p)
   | add("Stop"; $s)
+  | add("SessionStart"; $ss)
+  | add("SessionEnd"; $se)
 ' "$SETTINGS" > "$tmp"
 
 if jq empty "$tmp" 2>/dev/null; then
   mv "$tmp" "$SETTINGS"
-  echo "     已合并 Notification / UserPromptSubmit / Stop (备份见 $SETTINGS.bak.*)"
+  echo "     已合并 Notification / UserPromptSubmit / Stop / SessionStart / SessionEnd (备份见 $SETTINGS.bak.*)"
 else
   rm -f "$tmp"
   echo "❌ 合并后 JSON 非法, 已保留原文件"; exit 1

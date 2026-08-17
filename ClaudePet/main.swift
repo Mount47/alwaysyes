@@ -18,6 +18,17 @@ struct SessionState {
     let updatedAt: Date
     let tty: String?         // 该会话所在终端的 tty, 用于一键跳回去
     let termProgram: String? // $TERM_PROGRAM, 如 iTerm.app / Apple_Terminal / ghostty
+    let cwd: String?         // 会话工作目录, 跳转时用来匹配 IDE 窗口
+    let pid: pid_t?          // 会话所属的 claude 进程, 用来判活(hook 记录, 老文件可能没有)
+    let inferred: Bool       // true = 扫描进程推断出来的, 不是 hook 写的
+
+    // 进程还活着吗? 没记 pid 的老状态文件返回 nil(交给按时间超时的老办法)
+    var isAlive: Bool? {
+        guard let pid = pid, pid > 0 else { return nil }
+        // kill(pid, 0): 进程存在返回 0; ESRCH 表示没这个进程; EPERM 表示存在但不是我们能管的
+        if kill(pid, 0) == 0 { return true }
+        return errno != ESRCH ? true : false
+    }
 }
 
 // 汇总后的整体态：等待 > 出错 > 运行 > 空闲 > 停用

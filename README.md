@@ -90,29 +90,65 @@ curl -fsSL https://raw.githubusercontent.com/legeling/awesome-codex-pet/main/scr
 
 ### 跳回终端能跳多准
 
-hook 会把会话所在的 tty 和 `$TERM_PROGRAM` 一起写进状态文件:
+hook 会把会话所在的 tty、`$TERM_PROGRAM` 和 cwd 一起写进状态文件:
 
 - **iTerm2 / Apple Terminal**:按 tty 精确定位到那一个标签页并选中(它们的 AppleScript 词典里标签页有 `tty` 属性)。
-- **其它终端**(VS Code 集成终端 / Ghostty / WezTerm / kitty / Alacritty / Warp …):没有可脚本化的标签页模型,退化为把那个 app 拉到最前。
+- **其它终端**(Ghostty / WezTerm / kitty / Alacritty / Warp / VS Code 集成终端 …):没有可脚本化的标签页模型,退化为把那个 app 拉到最前。
+- **VS Code / Cursor 插件里的会话**:它跑在 stdio 上,既没有 tty 也没有 `TERM_PROGRAM`。这时靠 cwd 去命中 `~/.claude/ide/*.lock` 里的 `workspaceFolders`,反推出是哪个 IDE 再激活它。
 
 首次点击时 macOS 会弹"允许 ClaudePet 控制 iTerm"的自动化授权框,同意一次即可。本 app 是 ad-hoc 签名,重新构建后签名会变,系统可能再问一次。
 
 ## 组成
 
 ```
-状态来源(hook 脚本, 在 ~/.claude/hooks/)          app(本项目)
-  notify-confirm.sh  Notification → waiting + 通知      ClaudePet.app
-  pet-prompt.sh      UserPromptSubmit → running   ──▶   读 ~/.claude/pet-state/*.json
-  pet-stop.sh        Stop → idle                        汇总 → 菜单栏图标 + 桌面宠物
+状态来源(hook 脚本, 在 ~/.claude/hooks/)             app(本项目)
+  _common.sh          共用: 取 cwd/tty/pid + 写状态       ClaudePet.app
+  pet-session-start.sh SessionStart     → idle            读 ~/.claude/pet-state/*.json
+  pet-prompt.sh        UserPromptSubmit → running   ──▶   + 扫进程兜底(SessionScanner)
+  notify-confirm.sh    Notification     → waiting + 通知  汇总 → 菜单栏图标 + 桌面宠物
+  pet-stop.sh          Stop             → idle
+  pet-session-end.sh   SessionEnd       → 删除状态文件
 ```
 
-每个会话写一个 `~/.claude/pet-state/<session_id>.json`,互不干扰。app 用 FSEvents 实时监听该目录。字段:`project / cwd / status / session_id / updated_at / tty / term_program`,后两个用于跳回终端。
+每个会话写一个 `~/.claude/pet-state/<session_id>.json`,互不干扰。app 用 FSEvents 实时监听该目录。字段:
 
-`status` 除 `waiting / running / idle` 外还认 `failed`(菜单栏变橙、宠物播 failed 动画)。app 侧已就绪,但目前没有 hook 会写它 —— 要让工具报错自动变脸,需要再挂一个 `PostToolUse` hook 判断返回体里的错误。
+| 字段 | 用途 |
+|---|---|
+| `project` / `cwd` | 菜单里显示哪个项目;cwd 还用于反推 IDE 窗口 |
+| `status` | `waiting` / `running` / `idle` / `failed` |
+| `session_id` / `updated_at` | 文件名与时效判断 |
+| `tty` / `term_program` | 跳回终端 |
+| `pid` | 会话所属的 claude 进程,用来判活 |
+| `inferred` | true = 扫描推断出来的,不是 hook 写的 |
 
-### 状态过期与重置
+`status` 里的 `failed` app 侧已就绪(菜单栏变橙、宠物播 failed 动画),但目前没有 hook 会写它 —— 要让工具报错自动变脸,需要再挂一个 `PostToolUse` hook 判断返回体里的错误。
 
-会话正常结束会触发 Stop 转 idle。若会话异常退出留下卡住的状态,app 会按状态分级自动清理:running 超 15 分钟、waiting 超 40 分钟、failed 超 15 分钟、idle 超 5 分钟视为失效。也可随时点菜单/右键的**重置状态**一键清空。
+### 为什么会漏检,以及「刷新状态」干了什么
+
+hook 是**事件驱动**的:不发生事件就不写状态。所以有三种情况会漏:
+
+1. 装 hook **之前**就开着的会话 —— 它永远不会补触发 `SessionStart`。
+2. 会话开着但你一直没说话 —— 以前只有 `UserPromptSubmit` 才登记,现在 `SessionStart` 已经堵上这个口。
+3. 会话异常退出(`kill -9`、关窗口)没触发 `SessionEnd`,留下陈旧状态。
+
+**「刷新状态」**(菜单和宠物右键菜单里都有,快捷键 `R`)直接扫进程对账,绕过 hook:
+
+- `ps -axww` 找出所有 argv[0] 是 `claude` 的进程,`lsof` 批量取它们的 cwd,argv 里的 `--resume=<uuid>` 给出 session_id
+- **活着但状态目录里没有** → 补一条。状态由转录文件 `~/.claude/projects/*/<session_id>.jsonl` 的 mtime 推断:近 60 秒还在写算 `running`,否则算 `idle`
+- **没记 pid 的老状态文件、其 cwd 下又没有活着的进程** → 当残留清掉
+- **hook 写的状态永远优先**,扫描只补缺和清死,绝不会把 `waiting` 覆盖成别的
+
+app 启动时也会静默扫一次(把它没开着时就已经在跑的会话捞回来),平时不做定时扫描。
+
+### 状态过期与清理
+
+清理规则按可靠性排序:
+
+1. **进程判活**(最准):状态文件里记了 `pid`,app 每 5 秒 `kill(pid, 0)` 一下,进程没了立刻清,不用猜。
+2. **SessionEnd hook**:会话正常结束直接删文件。
+3. **时间超时**(兜底,给没记 pid 的老文件用):`waiting` 40 分钟 / `running` 15 分钟 / `failed` 15 分钟;进程还活着时这两个放宽到 12 小时,免得长任务被误清。`idle` 统一 12 小时 —— 它以前是 5 分钟,而这正是"会话还活着、菜单里却没了"的元凶。
+
+也可随时点菜单/右键的**重置状态**一键清空全部。
 
 ## 三层开关
 
@@ -164,4 +200,5 @@ petdex 的美术资源版权归**各自提交者**所有,其中部分为同人�
 - 用量环(读 Claude Code statusline 的 `rate_limits`,在宠物外圈画 5h / 7d 额度)
 - 气泡里直接 Allow/Deny(要接 permission hook)
 - 区分"当前活跃会话"与"后台等待项目"(当前会把你正在看的会话也算作等待)
+- `claudepet refresh` 命令行版的刷新(现在只有菜单里有;命令行版要在 bash 里重写一遍扫描逻辑,暂不做)
 - Homebrew 分发(`brew install claudepet`)

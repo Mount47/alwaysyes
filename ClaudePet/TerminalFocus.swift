@@ -25,8 +25,8 @@ enum TerminalFocus {
         (["tabby"],                      "org.tabby"),
     ]
 
-    // 入口: 异步执行, 不阻塞菜单栏
-    static func focus(tty rawTTY: String?, termProgram: String?) {
+    // 入口: 异步执行, 不阻塞菜单栏。cwd 用于 VS Code 插件那类"不占终端"的会话兜底。
+    static func focus(tty rawTTY: String?, termProgram: String?, cwd: String?) {
         let prog = (termProgram ?? "").lowercased()
         let tty = normalizeTTY(rawTTY)
         DispatchQueue.global(qos: .userInitiated).async {
@@ -37,8 +37,11 @@ enum TerminalFocus {
                 if prog.isEmpty || prog.contains("terminal"),
                    isRunning("com.apple.Terminal"), run(terminalScript(tty)) { return }
             }
-            // 2) 其余情况: 把对应终端 app 拉到最前, 剩下的交给用户
-            activateApp(matching: prog)
+            // 2) 其余终端没有可脚本化的标签页模型 → 把对应 app 拉到最前
+            if activate(bundleId: bundleId(forTermProgram: prog)) { return }
+            // 3) 最后一招: VS Code 插件里的会话既没有 tty 也没有 TERM_PROGRAM,
+            //    靠 cwd 命中 ~/.claude/ide/*.lock 的 workspaceFolders 找出是哪个 IDE
+            _ = activate(bundleId: ideBundleId(forCwd: cwd))
         }
     }
 
@@ -113,11 +116,43 @@ enum TerminalFocus {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).isEmpty
     }
 
-    private static func activateApp(matching prog: String) {
-        guard !prog.isEmpty,
-              let entry = known.first(where: { $0.keys.contains(where: { prog.contains($0) }) }),
-              let app = NSRunningApplication.runningApplications(withBundleIdentifier: entry.bundleId).first
-        else { return }
+    private static func bundleId(forTermProgram prog: String) -> String? {
+        guard !prog.isEmpty else { return nil }
+        return known.first(where: { $0.keys.contains(where: { prog.contains($0) }) })?.bundleId
+    }
+
+    /// 把某个 app 拉到最前。没在跑(或 bundleId 为空)就什么都不做, 绝不顺手启动一个新的。
+    @discardableResult
+    private static func activate(bundleId: String?) -> Bool {
+        guard let id = bundleId,
+              let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first
+        else { return false }
         app.activate(options: [.activateAllWindows])
+        return true
+    }
+
+    /// IDE 集成锁: `~/.claude/ide/<port>.lock`, 内容形如
+    /// `{"pid":1232,"workspaceFolders":["/Users/…/ragflow"],"ideName":"Visual Studio Code"}`
+    /// VS Code 插件里的会话不占终端(tty 和 TERM_PROGRAM 都是空), 只能靠 cwd 命中
+    /// workspaceFolders 反推是哪个 IDE。多个窗口都命中时取路径最长的那个(最具体)。
+    private static func ideBundleId(forCwd cwd: String?) -> String? {
+        guard let cwd = cwd, !cwd.isEmpty else { return nil }
+        let dir = home.appendingPathComponent(".claude/ide")
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) else { return nil }
+
+        var best: (depth: Int, ide: String)?
+        for f in files where f.pathExtension == "lock" {
+            guard let d = try? Data(contentsOf: f),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let folders = o["workspaceFolders"] as? [String] else { continue }
+            let ide = (o["ideName"] as? String ?? "").lowercased()
+            for folder in folders where cwd == folder || cwd.hasPrefix(folder + "/") {
+                if best == nil || folder.count > best!.depth { best = (folder.count, ide) }
+            }
+        }
+        guard let ide = best?.ide else { return nil }
+        if ide.contains("cursor") { return "com.todesktop.230313mzl4w4u92" }
+        return "com.microsoft.VSCode"   // 认不出来就按 VS Code 试; 它没在跑的话 activate 自己会放弃
     }
 }

@@ -18,6 +18,7 @@ swiftc -O \
   ClaudePet/PetController.swift \
   ClaudePet/SpriteSheet.swift \
   ClaudePet/TerminalFocus.swift \
+  ClaudePet/SessionScanner.swift \
   -o "$BIN_DIR/ClaudePet"
 
 echo "==> 写入 Info.plist"

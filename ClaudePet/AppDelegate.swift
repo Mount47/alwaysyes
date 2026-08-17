@@ -24,6 +24,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refresh()
         }
         refresh()
+        // 启动时扫一次进程: 把 app 没开着的时候就已经在跑的会话补进来。静默, 不弹通知。
+        runScan(notify: false)
+    }
+
+    // MARK: - 进程扫描(兜底): 补回活着但没状态的会话, 清掉没记 pid 的残留
+    func runScan(notify: Bool) {
+        SessionScanner.scan { [weak self] added, removed in
+            guard let self = self else { return }
+            self.refresh()
+            guard notify, added + removed > 0 else { return }
+            var parts: [String] = []
+            if added > 0   { parts.append("补回 \(added) 个会话") }
+            if removed > 0 { parts.append("清掉 \(removed) 条陈旧状态") }
+            self.notifyBanner(parts.joined(separator: ", "))
+        }
+    }
+
+    // 弹一条 macOS 通知。用 osascript(本项目 hook 里也是这个方案, 本机验证可用)。
+    func notifyBanner(_ message: String) {
+        let esc = message.replacingOccurrences(of: "\\", with: "\\\\")
+                         .replacingOccurrences(of: "\"", with: "\\\"")
+        let src = "display notification \"\(esc)\" with title \"ClaudePet\" subtitle \"已刷新项目状态\""
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", src]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            do { try p.run() } catch { return }
+            p.waitUntilExit()
+        }
     }
 
     // MARK: - 监听状态目录变化(实时响应)
@@ -103,29 +134,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let age = now.timeIntervalSince(updated)
             let tty = (obj["tty"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let term = (obj["term_program"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let cwd = (obj["cwd"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let pid = (obj["pid"] as? NSNumber).map { pid_t($0.int32Value) }
+            let inferred = (obj["inferred"] as? Bool) ?? false
 
-            // 按状态分级判定"卡住/过期"并清理陈旧文件:
-            //  - running 正常几秒~几分钟就转 idle; 超 15 分钟没更新 → 会话多半已崩溃
-            //  - waiting 会话若正常收尾会转 idle; 超 40 分钟没更新多半是异常退出没触发
-            //    Stop(如直接关窗口/切权限模式), 视为失效清掉, 避免宠物永远卡红
-            //  - failed 只是提醒你看一眼, 15 分钟后自动消气
-            //  - idle 不影响宠物, 超 5 分钟只是垃圾文件, 清掉
-            let expired: Bool
-            switch status {
-            case "running": expired = age > 15 * 60
-            case "waiting": expired = age > 40 * 60
-            case "failed":  expired = age > 15 * 60
-            default:        expired = age > 5 * 60   // idle 及未知状态
-            }
-            if expired {
+            let s = SessionState(project: project, status: status,
+                                 sessionId: sid, updatedAt: updated,
+                                 tty: tty, termProgram: term, cwd: cwd,
+                                 pid: pid, inferred: inferred)
+
+            // 清理规则, 按可靠性排序:
+            //  ① 记了 pid 且进程已死 → 立刻清, 不用猜。
+            //  ② 否则按状态分级超时兜底。waiting/running/failed 保持原阈值, 防止某个
+            //     会话卡在提醒态; 但 pid 还活着时放宽到 12 小时, 免得长任务被误清。
+            //  ③ idle 从 5 分钟放宽到 12 小时 —— 5 分钟正是"活会话从菜单里消失"的元凶,
+            //     现在有 SessionEnd hook + pid 判活 + 手动刷新兜底, 不需要它了。
+            let alive = s.isAlive          // nil = 老文件没记 pid
+            if alive == false {
                 try? FileManager.default.removeItem(at: f)
                 continue
             }
-            result.append(SessionState(project: project, status: status,
-                                       sessionId: sid, updatedAt: updated,
-                                       tty: tty, termProgram: term))
+            let limit: TimeInterval
+            switch status {
+            case "waiting": limit = alive == true ? 12 * 3600 : 40 * 60
+            case "running": limit = alive == true ? 12 * 3600 : 15 * 60
+            case "failed":  limit = 15 * 60
+            default:        limit = 12 * 3600     // idle 及未知状态
+            }
+            if age > limit {
+                try? FileManager.default.removeItem(at: f)
+                continue
+            }
+            result.append(s)
         }
-        return result
+
+        // 去重: 同一个 pid 若既有 hook 写的、又有扫描推断的(扫描先补上、随后该会话触发了 hook),
+        // 以 hook 那份为准, 顺手把推断的文件删掉, 免得菜单里一个会话显示两行。
+        let authoritativePids = Set(result.filter { !$0.inferred }.compactMap { $0.pid })
+        var kept: [SessionState] = []
+        for s in result {
+            if s.inferred, let p = s.pid, authoritativePids.contains(p) {
+                try? FileManager.default.removeItem(
+                    at: stateDir.appendingPathComponent("\(s.sessionId).json"))
+                continue
+            }
+            kept.append(s)
+        }
+        return kept
     }
 
     // MARK: - 刷新图标与菜单
@@ -184,10 +239,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // 全部等待项目, 最近的在前(气泡按需展开时逐行列出)
             let sorted = waiting.sorted(by: { $0.updatedAt > $1.updatedAt })
             projects = sorted.map { $0.project }
-            // 点气泡里的项目名 → 跳到那个会话所在的终端标签页
+            // 点气泡里的项目名 → 跳到那个会话所在的终端标签页 / IDE 窗口
             pet.onProjectClick = { idx in
                 guard idx >= 0, idx < sorted.count else { return }
-                TerminalFocus.focus(tty: sorted[idx].tty, termProgram: sorted[idx].termProgram)
+                TerminalFocus.focus(tty: sorted[idx].tty,
+                                    termProgram: sorted[idx].termProgram,
+                                    cwd: sorted[idx].cwd)
             }
         case .failed:   emoji = "💥"; anim = .failed
         case .running:  emoji = "🐥"; anim = .run
@@ -204,6 +261,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hide = NSMenuItem(title: "隐藏桌面宠物", action: #selector(togglePet), keyEquivalent: "")
         hide.target = self
         menu.addItem(hide)
+        let rescan = NSMenuItem(title: "刷新状态", action: #selector(refreshScan), keyEquivalent: "")
+        rescan.target = self
+        menu.addItem(rescan)
         let reset = NSMenuItem(title: "重置状态", action: #selector(resetState), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
@@ -304,7 +364,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let item = NSMenuItem(title: line, action: #selector(focusSession(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = s
-                item.toolTip = "跳到该会话所在的终端"
+                item.toolTip = s.inferred ? "由进程扫描发现 — 点击跳到该会话" : "跳到该会话所在的终端"
                 menu.addItem(item)
             }
         }
@@ -345,6 +405,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         petToggle.target = self
         petToggle.isEnabled = cfg.enabled   // 总开关关了时宠物开关无意义
         menu.addItem(petToggle)
+
+        // 刷新状态: 扫一遍进程, 把"活着但漏检"的会话补回来(hook 是事件驱动的, 会漏)
+        let rescan = NSMenuItem(title: "刷新状态", action: #selector(refreshScan), keyEquivalent: "r")
+        rescan.target = self
+        menu.addItem(rescan)
 
         // 重置状态: 清空所有会话状态文件。万一某会话崩溃留下卡住的 waiting/running, 一键清干净
         let reset = NSMenuItem(title: "重置状态", action: #selector(resetState), keyEquivalent: "")
@@ -422,10 +487,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return slugs.sorted()
     }
 
-    // 点菜单里的会话行 / 气泡里的项目名 → 把那个终端拉到最前
+    // 点菜单里的会话行 / 气泡里的项目名 → 把那个终端(或 IDE 窗口)拉到最前
     @objc func focusSession(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? SessionState else { return }
-        TerminalFocus.focus(tty: s.tty, termProgram: s.termProgram)
+        TerminalFocus.focus(tty: s.tty, termProgram: s.termProgram, cwd: s.cwd)
+    }
+
+    // 手动刷新: 扫进程对账, 有改动时弹条通知说明补/清了什么
+    @objc func refreshScan() {
+        runScan(notify: true)
     }
 
     // 选择某个宠物形象: 写入 activePet 并刷新
